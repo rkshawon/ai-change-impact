@@ -1,7 +1,17 @@
 import * as vscode from "vscode";
 import { execFile } from "child_process";
+import * as dotenv from "dotenv";
+import * as path from "path";
+import type { AIProvider } from "./ai/AIProvider";
+import { GeminiProvider } from "./ai/GeminiProvider";
 
 export function activate(context: vscode.ExtensionContext) {
+  /*
+   * Load .env from the extension's root directory.
+   * This picks up GEMINI_API_KEY without requiring a system env var.
+   */
+  dotenv.config({ path: path.join(context.extensionPath, ".env") });
+
   console.log("Change Guard is active!");
 
   /*
@@ -148,21 +158,27 @@ async function previewChanges(): Promise<void> {
 
     /*
      * -------------------------------------------------------
-     * Show progress while analysis is being prepared
+     * Run AI analysis with progress indicator
      * -------------------------------------------------------
      */
 
-    await vscode.window.withProgress(
+    const analysis = await vscode.window.withProgress(
       {
         location: vscode.ProgressLocation.Notification,
 
-        title: "Change Guard: Preparing analysis...",
+        title: "Change Guard: Analyzing changes with AI...",
 
         cancellable: false,
       },
 
       async () => {
-        await new Promise((resolve) => setTimeout(resolve, 300));
+        const provider: AIProvider = new GeminiProvider();
+
+        return provider.analyze({
+          workspacePath,
+          changedFiles,
+          diff,
+        });
       },
     );
 
@@ -172,25 +188,25 @@ async function previewChanges(): Promise<void> {
      * -------------------------------------------------------
      */
 
-    showAnalysisPanel(workspacePath, changedFiles, diff);
-
-    /*
-     * -------------------------------------------------------
-     * Temporary message.
-     *
-     * This is where AI analysis will be connected.
-     * -------------------------------------------------------
-     */
+    showAnalysisPanel(workspacePath, changedFiles, diff, analysis);
 
     vscode.window.showInformationMessage(
-      `Change Guard: ${changedFiles.length} file${
+      `Change Guard: Analysis complete for ${changedFiles.length} file${
         changedFiles.length === 1 ? "" : "s"
-      } ready for AI analysis.`,
+      }.`,
     );
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
 
-    vscode.window.showErrorMessage(`Change Guard: ${message}`);
+    /*
+     * Make sure we never leak the API key in error messages.
+     */
+    const safeMessage = message.replace(
+      /sk-[A-Za-z0-9_-]+/g,
+      "sk-***",
+    );
+
+    vscode.window.showErrorMessage(`Change Guard: ${safeMessage}`);
 
     console.error("Change Guard error:", error);
   }
@@ -203,6 +219,7 @@ function showAnalysisPanel(
   workspacePath: string,
   changedFiles: string[],
   diff: string,
+  analysis: string,
 ): void {
   const panel = vscode.window.createWebviewPanel(
     "changeGuardPreview",
@@ -216,6 +233,8 @@ function showAnalysisPanel(
   const escapedWorkspace = escapeHtml(workspacePath);
 
   const escapedDiff = escapeHtml(diff);
+
+  const escapedAnalysis = escapeHtml(analysis);
 
   panel.webview.html = `
 <!DOCTYPE html>
@@ -294,10 +313,22 @@ pre {
 }
 
 .ai-box {
-  border: 1px dashed var(--vscode-panel-border);
+  border: 1px solid var(--vscode-panel-border);
   border-radius: 8px;
   padding: 20px;
   margin-top: 20px;
+  background: var(--vscode-textCodeBlock-background);
+}
+
+.analysis {
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  line-height: 1.6;
+  font-family: var(--vscode-font-family);
+  font-size: 14px;
+  background: transparent;
+  padding: 0;
+  border: none;
 }
 
 </style>
@@ -359,35 +390,7 @@ ${changedFiles
 
 <h2>🤖 AI Impact Analysis</h2>
 
-<p>
-AI analysis will be connected here.
-</p>
-
-<p>
-The AI will eventually receive the current
-changes and investigate the project to determine
-possible effects on:
-</p>
-
-<ul>
-
-<li>Other components</li>
-
-<li>Functions and business logic</li>
-
-<li>Data flow</li>
-
-<li>API calls</li>
-
-<li>State management</li>
-
-<li>Types and interfaces</li>
-
-<li>UI behavior</li>
-
-<li>Potential runtime errors</li>
-
-</ul>
+<pre class="analysis">${escapedAnalysis}</pre>
 
 </div>
 
