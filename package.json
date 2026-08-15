@@ -1,6 +1,6 @@
 {
-  "name": "ai-change-impact",
-  "displayName": "AI Change Impact",
+  "name": "change-guard",
+  "displayName": "Change Guard",
   "description": "AI-powered code change impact analysis",
   "version": "0.0.1",
   "engines": {
@@ -16,8 +16,22 @@
   "contributes": {
     "commands": [
       {
-        "command": "ai-change-impact.helloWorld",
-        "title": "Hello World"
+        "command": "change-guard.previewChanges",
+        "title": "Change Guard: Preview Changes"
+      }
+    ],
+    "menus": {
+      "scm/title": [
+        {
+          "command": "change-guard.previewChanges",
+          "group": "navigation@1"
+        }
+      ]
+    },
+    "keybindings": [
+      {
+        "command": "change-guard.previewChanges",
+        "key": "ctrl+alt+g"
       }
     ]
   },
