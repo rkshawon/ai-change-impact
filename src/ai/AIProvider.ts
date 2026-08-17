@@ -17,6 +17,7 @@ export interface AffectedFileImpact {
   reason: string;
   severity: Severity;
   evidence?: string;
+  line?: number;
 }
 
 export interface RiskItem {
@@ -36,6 +37,7 @@ export interface SemanticChange {
   newBehavior: string;
   severity: Severity;
   evidence: string;
+  line?: number;
 }
 
 export interface ImpactReport {
@@ -153,7 +155,8 @@ export function parseImpactReport(rawText: string, changedFilesFallback: string[
               const reason = typeof obj.reason === "string" ? obj.reason : "Affected by changes";
               const itemSev = normalizeSeverity(obj.severity, severity);
               const evidence = typeof obj.evidence === "string" ? obj.evidence : undefined;
-              return itemPath ? { path: itemPath, reason, severity: itemSev, evidence } : null;
+              const line = typeof obj.line === "number" && obj.line > 0 ? obj.line : undefined;
+              return itemPath ? { path: itemPath, reason, severity: itemSev, evidence, line } : null;
             }
             return null;
           })
@@ -171,8 +174,9 @@ export function parseImpactReport(rawText: string, changedFilesFallback: string[
               const newBehavior = typeof obj.newBehavior === "string" ? obj.newBehavior : "";
               const itemSev = normalizeSeverity(obj.severity, severity);
               const evidence = typeof obj.evidence === "string" ? obj.evidence : "";
+              const line = typeof obj.line === "number" && obj.line > 0 ? obj.line : undefined;
               return (file && description)
-                ? { file, description, oldBehavior, newBehavior, severity: itemSev, evidence }
+                ? { file, description, oldBehavior, newBehavior, severity: itemSev, evidence, line }
                 : null;
             }
             return null;

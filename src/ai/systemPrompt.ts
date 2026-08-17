@@ -133,6 +133,7 @@ When your investigation is complete, output ONLY a valid JSON object matching th
   "semanticChanges": [
     {
       "file": "path/to/file.ts",
+      "line": 91,
       "description": "What specifically changed in terms of program behavior",
       "oldBehavior": "What the code did BEFORE the change (include the actual old expression/value)",
       "newBehavior": "What the code does AFTER the change (include the actual new expression/value)",
@@ -143,6 +144,7 @@ When your investigation is complete, output ONLY a valid JSON object matching th
   "affectedFiles": [
     {
       "path": "path/to/downstream/affected_file.ts",
+      "line": 12,
       "reason": "Explanation of how and why this file is affected, with specific line/function references",
       "severity": "low" | "medium" | "high" | "critical",
       "evidence": "Concrete evidence: import chain, function call, data flow, etc."
