@@ -210,13 +210,23 @@ function showAnalysisPanel(
     },
   );
 
-  // Handle messages from the webview (e.g. clicking on affected files)
+  // Handle messages from the webview (e.g. clicking on files or line locations)
   panel.webview.onDidReceiveMessage(async (message) => {
     if (message?.command === "openFile" && typeof message.file === "string") {
       try {
         const fileUri = vscode.Uri.file(path.join(workspacePath, message.file));
         const doc = await vscode.workspace.openTextDocument(fileUri);
-        await vscode.window.showTextDocument(doc, { preview: true });
+
+        const line = typeof message.line === "number" && message.line > 0
+          ? message.line - 1  // VS Code lines are 0-indexed
+          : 0;
+
+        const range = new vscode.Range(line, 0, line, 0);
+
+        await vscode.window.showTextDocument(doc, {
+          preview: true,
+          selection: range,
+        });
       } catch {
         vscode.window.showWarningMessage(
           `Change Guard: Could not open file "${message.file}"`,
@@ -251,10 +261,14 @@ function showAnalysisPanel(
     ? report.semanticChanges
         .map((sc: SemanticChange) => {
           const badge = getSeverityBadge(sc.severity);
-          return `<div class="semantic-item" onclick="openProjectFile('${escapeAttr(sc.file)}')" title="Click to open in editor">
+          const lineAttr = sc.line ? `, ${sc.line}` : "";
+          const lineBadge = sc.line
+            ? `<span class="line-badge" onclick="event.stopPropagation(); openProjectFile('${escapeAttr(sc.file)}'${lineAttr})" title="Open at line ${sc.line}">📍 Line ${sc.line}</span>`
+            : "";
+          return `<div class="semantic-item" onclick="openProjectFile('${escapeAttr(sc.file)}'${lineAttr})" title="Click to open in editor">
             <div class="semantic-header">
               <span class="file-link">⚡ <strong>${escapeHtml(sc.file)}</strong></span>
-              ${badge}
+              <div class="header-badges">${lineBadge} ${badge}</div>
             </div>
             <div class="semantic-desc">${escapeHtml(sc.description)}</div>
             <div class="semantic-diff">
@@ -272,10 +286,14 @@ function showAnalysisPanel(
     ? report.affectedFiles
         .map((af) => {
           const badge = getSeverityBadge(af.severity);
-          return `<div class="affected-item" onclick="openProjectFile('${escapeAttr(af.path)}')" title="Click to open in editor">
+          const lineAttr = af.line ? `, ${af.line}` : "";
+          const lineBadge = af.line
+            ? `<span class="line-badge" onclick="event.stopPropagation(); openProjectFile('${escapeAttr(af.path)}'${lineAttr})" title="Open at line ${af.line}">📍 Line ${af.line}</span>`
+            : "";
+          return `<div class="affected-item" onclick="openProjectFile('${escapeAttr(af.path)}'${lineAttr})" title="Click to open in editor">
             <div class="affected-header">
               <span class="file-link">🔗 <strong>${escapeHtml(af.path)}</strong></span>
-              ${badge}
+              <div class="header-badges">${lineBadge} ${badge}</div>
             </div>
             <div class="affected-reason">${escapeHtml(af.reason)}</div>
             ${af.evidence ? `<div class="semantic-evidence"><span class="evidence-label">Evidence:</span> ${escapeHtml(af.evidence)}</div>` : ""}
@@ -621,6 +639,31 @@ function showAnalysisPanel(
     font-weight: 600;
     margin-right: 4px;
   }
+
+  .header-badges {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-shrink: 0;
+  }
+
+  .line-badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 11px;
+    font-weight: 600;
+    background: rgba(79, 139, 255, 0.15);
+    color: var(--vscode-textLink-foreground, #4daafc);
+    border: 1px solid rgba(79, 139, 255, 0.3);
+    cursor: pointer;
+    transition: background 0.15s ease;
+    white-space: nowrap;
+  }
+  .line-badge:hover {
+    background: rgba(79, 139, 255, 0.3);
+  }
 </style>
 </head>
 <body>
@@ -675,11 +718,12 @@ function showAnalysisPanel(
 
 <script>
   const vscode = acquireVsCodeApi();
-  function openProjectFile(filePath) {
-    vscode.postMessage({
-      command: 'openFile',
-      file: filePath
-    });
+  function openProjectFile(filePath, line) {
+    const msg = { command: 'openFile', file: filePath };
+    if (typeof line === 'number' && line > 0) {
+      msg.line = line;
+    }
+    vscode.postMessage(msg);
   }
 </script>
 
