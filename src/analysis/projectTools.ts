@@ -2,16 +2,15 @@
  * Project tools for Change Guard.
  *
  * These tools give an AI model **read-only** access to the
- * current workspace.  They are provider-independent — nothing
+ * current workspace. They are provider-independent — nothing
  * in this file imports or references any specific AI SDK.
  *
  * Security constraints:
- *
- * - All file paths are resolved and validated to stay inside
- *   the workspace root.
+ * - All file paths are resolved and validated to stay inside the workspace root.
  * - No write / delete / execute operations are exposed.
- * - A maximum file size prevents accidentally loading huge files.
- * - Search results are capped.
+ * - Maximum file size prevents accidentally loading huge files.
+ * - Search results and list results are capped.
+ * - Common build and dependency directories are excluded.
  */
 
 import * as fs from "fs";
@@ -27,21 +26,24 @@ import { execFile } from "child_process";
 /** Maximum file size we will read (bytes). */
 const MAX_FILE_SIZE = 500 * 1024; // 500 KB
 
-/** Maximum number of search results returned. */
+/** Maximum number of search match lines returned. */
 const MAX_SEARCH_RESULTS = 50;
 
 /** Maximum number of files listed per directory. */
 const MAX_LIST_RESULTS = 200;
 
-/** Directories excluded from search. */
+/** Directories excluded from search and exploration. */
 const EXCLUDED_DIRS = new Set([
   ".git",
   "node_modules",
   ".next",
   "dist",
+  "build",
   "out",
   "coverage",
   ".turbo",
+  ".vscode",
+  ".cache",
 ]);
 
 /*
@@ -52,23 +54,25 @@ const EXCLUDED_DIRS = new Set([
 
 /**
  * Resolve a workspace-relative `filePath` to an absolute path
- * and ensure it stays inside `workspaceRoot`.
+ * and ensure it stays strictly inside `workspaceRoot`.
  *
  * Rejects absolute paths and path-traversal attempts.
  */
-function safePath(workspaceRoot: string, filePath: string): string {
-  /*
-   * Reject obviously absolute paths on any platform.
-   */
+export function safePath(workspaceRoot: string, filePath: string): string {
+  if (!filePath || typeof filePath !== "string") {
+    throw new Error("Invalid file path.");
+  }
+
+  // Reject explicit absolute paths
   if (path.isAbsolute(filePath)) {
     throw new Error(`Absolute paths are not allowed: ${filePath}`);
   }
 
-  const resolved = path.resolve(workspaceRoot, filePath);
+  const resolvedRoot = path.resolve(workspaceRoot);
+  const resolved = path.resolve(resolvedRoot, filePath);
+  const normalizedRoot = resolvedRoot + path.sep;
 
-  const normalizedRoot = path.resolve(workspaceRoot) + path.sep;
-
-  if (!resolved.startsWith(normalizedRoot) && resolved !== path.resolve(workspaceRoot)) {
+  if (!resolved.startsWith(normalizedRoot) && resolved !== resolvedRoot) {
     throw new Error(`Path escapes the workspace: ${filePath}`);
   }
 
@@ -81,6 +85,9 @@ function safePath(workspaceRoot: string, filePath: string): string {
  * -----------------------------------------------------------------
  */
 
+/**
+ * Read the UTF-8 content of a file within the workspace.
+ */
 export async function readFile(
   workspaceRoot: string,
   filePath: string,
@@ -88,7 +95,6 @@ export async function readFile(
   const absolute = safePath(workspaceRoot, filePath);
 
   let stats: fs.Stats;
-
   try {
     stats = await fs.promises.stat(absolute);
   } catch {
@@ -96,7 +102,7 @@ export async function readFile(
   }
 
   if (!stats.isFile()) {
-    throw new Error(`Not a file: ${filePath}`);
+    throw new Error(`Not a regular file: ${filePath}`);
   }
 
   if (stats.size > MAX_FILE_SIZE) {
@@ -114,6 +120,9 @@ export async function readFile(
  * -----------------------------------------------------------------
  */
 
+/**
+ * Search project files for a query string and return matching file locations with line context.
+ */
 export async function searchFiles(
   workspaceRoot: string,
   query: string,
@@ -122,16 +131,16 @@ export async function searchFiles(
     throw new Error("Search query must not be empty.");
   }
 
+  const trimmedQuery = query.trim().toLowerCase();
   const results: string[] = [];
 
-  await walkForSearch(workspaceRoot, workspaceRoot, query.toLowerCase(), results);
+  await walkForSearch(workspaceRoot, workspaceRoot, trimmedQuery, results);
 
   return results;
 }
 
 /**
- * Recursively walk the workspace looking for files whose
- * content contains `query`.
+ * Recursively walk the workspace looking for files whose content contains `query`.
  */
 async function walkForSearch(
   workspaceRoot: string,
@@ -144,7 +153,6 @@ async function walkForSearch(
   }
 
   let entries: fs.Dirent[];
-
   try {
     entries = await fs.promises.readdir(dir, { withFileTypes: true });
   } catch {
@@ -167,18 +175,29 @@ async function walkForSearch(
     } else if (entry.isFile()) {
       try {
         const stat = await fs.promises.stat(full);
-
         if (stat.size > MAX_FILE_SIZE) {
           continue;
         }
 
         const content = await fs.promises.readFile(full, "utf-8");
+        const lowerContent = content.toLowerCase();
 
-        if (content.toLowerCase().includes(query)) {
-          results.push(path.relative(workspaceRoot, full));
+        if (lowerContent.includes(query)) {
+          const relPath = path.relative(workspaceRoot, full).replace(/\\/g, "/");
+          const lines = content.split(/\r?\n/);
+
+          for (let i = 0; i < lines.length; i++) {
+            if (results.length >= MAX_SEARCH_RESULTS) {
+              break;
+            }
+            if (lines[i].toLowerCase().includes(query)) {
+              const lineSnippet = lines[i].trim();
+              results.push(`${relPath}:${i + 1}: ${lineSnippet}`);
+            }
+          }
         }
       } catch {
-        // skip unreadable files
+        // skip unreadable or binary files
       }
     }
   }
@@ -190,14 +209,17 @@ async function walkForSearch(
  * -----------------------------------------------------------------
  */
 
+/**
+ * List files and directories under a workspace-relative directory path.
+ */
 export async function listFiles(
   workspaceRoot: string,
-  directory: string,
+  directory: string = ".",
 ): Promise<string[]> {
-  const absolute = safePath(workspaceRoot, directory);
+  const normalizedDir = directory && directory.trim() ? directory.trim() : ".";
+  const absolute = safePath(workspaceRoot, normalizedDir);
 
   let stats: fs.Stats;
-
   try {
     stats = await fs.promises.stat(absolute);
   } catch {
@@ -209,7 +231,6 @@ export async function listFiles(
   }
 
   const entries = await fs.promises.readdir(absolute, { withFileTypes: true });
-
   const result: string[] = [];
 
   for (const entry of entries) {
@@ -217,8 +238,11 @@ export async function listFiles(
       break;
     }
 
-    const suffix = entry.isDirectory() ? "/" : "";
+    if (EXCLUDED_DIRS.has(entry.name)) {
+      continue;
+    }
 
+    const suffix = entry.isDirectory() ? "/" : "";
     result.push(entry.name + suffix);
   }
 
@@ -231,6 +255,9 @@ export async function listFiles(
  * -----------------------------------------------------------------
  */
 
+/**
+ * Get the current Git diff for the workspace.
+ */
 export async function getGitDiff(workspaceRoot: string): Promise<string> {
   return new Promise((resolve, reject) => {
     execFile(
@@ -244,7 +271,6 @@ export async function getGitDiff(workspaceRoot: string): Promise<string> {
       (error, stdout, stderr) => {
         if (error) {
           reject(new Error(stderr.trim() || error.message));
-
           return;
         }
 
