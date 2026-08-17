@@ -16,6 +16,7 @@ export interface AffectedFileImpact {
   path: string;
   reason: string;
   severity: Severity;
+  evidence?: string;
 }
 
 export interface RiskItem {
@@ -23,11 +24,26 @@ export interface RiskItem {
   description: string;
 }
 
+/**
+ * A single semantic/behavioral change detected in the diff.
+ *
+ * Captures old → new substitution with evidence and severity.
+ */
+export interface SemanticChange {
+  file: string;
+  description: string;
+  oldBehavior: string;
+  newBehavior: string;
+  severity: Severity;
+  evidence: string;
+}
+
 export interface ImpactReport {
   summary: string;
   severity: Severity;
   changedFiles: ChangedFileImpact[];
   affectedFiles: AffectedFileImpact[];
+  semanticChanges: SemanticChange[];
   risks: RiskItem[];
   recommendations: string[];
   rawText?: string;
@@ -107,7 +123,7 @@ export function parseImpactReport(rawText: string, changedFilesFallback: string[
       ? parsed.summary.trim()
       : "No summary provided by AI.";
 
-    const severity = normalizeSeverity(parsed.severity, "low");
+    const severity = normalizeSeverity(parsed.severity || parsed.overallSeverity, "low");
 
     const changedFiles: ChangedFileImpact[] = Array.isArray(parsed.changedFiles)
       ? parsed.changedFiles
@@ -126,7 +142,7 @@ export function parseImpactReport(rawText: string, changedFilesFallback: string[
             return null;
           })
           .filter((item: ChangedFileImpact | null): item is ChangedFileImpact => item !== null)
-      : changedFilesFallback.map((path) => ({ path, changes: [] }));
+      : changedFilesFallback.map((p) => ({ path: p, changes: [] }));
 
     const affectedFiles: AffectedFileImpact[] = Array.isArray(parsed.affectedFiles)
       ? parsed.affectedFiles
@@ -136,11 +152,32 @@ export function parseImpactReport(rawText: string, changedFilesFallback: string[
               const itemPath = typeof obj.path === "string" ? obj.path : "";
               const reason = typeof obj.reason === "string" ? obj.reason : "Affected by changes";
               const itemSev = normalizeSeverity(obj.severity, severity);
-              return itemPath ? { path: itemPath, reason, severity: itemSev } : null;
+              const evidence = typeof obj.evidence === "string" ? obj.evidence : undefined;
+              return itemPath ? { path: itemPath, reason, severity: itemSev, evidence } : null;
             }
             return null;
           })
           .filter((item: AffectedFileImpact | null): item is AffectedFileImpact => item !== null)
+      : [];
+
+    const semanticChanges: SemanticChange[] = Array.isArray(parsed.semanticChanges)
+      ? parsed.semanticChanges
+          .map((item: unknown) => {
+            if (item && typeof item === "object") {
+              const obj = item as Record<string, unknown>;
+              const file = typeof obj.file === "string" ? obj.file : "";
+              const description = typeof obj.description === "string" ? obj.description : "";
+              const oldBehavior = typeof obj.oldBehavior === "string" ? obj.oldBehavior : "";
+              const newBehavior = typeof obj.newBehavior === "string" ? obj.newBehavior : "";
+              const itemSev = normalizeSeverity(obj.severity, severity);
+              const evidence = typeof obj.evidence === "string" ? obj.evidence : "";
+              return (file && description)
+                ? { file, description, oldBehavior, newBehavior, severity: itemSev, evidence }
+                : null;
+            }
+            return null;
+          })
+          .filter((item: SemanticChange | null): item is SemanticChange => item !== null)
       : [];
 
     const risks: RiskItem[] = Array.isArray(parsed.risks)
@@ -169,6 +206,7 @@ export function parseImpactReport(rawText: string, changedFilesFallback: string[
       severity,
       changedFiles,
       affectedFiles,
+      semanticChanges,
       risks,
       recommendations,
       rawText,
@@ -178,8 +216,9 @@ export function parseImpactReport(rawText: string, changedFilesFallback: string[
     return {
       summary: rawText.length > 300 ? rawText.slice(0, 300) + "..." : rawText || "AI analysis completed.",
       severity: "low",
-      changedFiles: changedFilesFallback.map((path) => ({ path, changes: [] })),
+      changedFiles: changedFilesFallback.map((p) => ({ path: p, changes: [] })),
       affectedFiles: [],
+      semanticChanges: [],
       risks: [],
       recommendations: ["Review the raw analysis below."],
       rawText,

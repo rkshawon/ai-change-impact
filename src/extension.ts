@@ -2,7 +2,7 @@ import * as vscode from "vscode";
 import { execFile } from "child_process";
 import * as dotenv from "dotenv";
 import * as path from "path";
-import type { AIProvider, ImpactReport, Severity } from "./ai/AIProvider";
+import type { AIProvider, ImpactReport, Severity, SemanticChange } from "./ai/AIProvider";
 import { GeminiProvider } from "./ai/GeminiProvider";
 
 export function activate(context: vscode.ExtensionContext) {
@@ -246,6 +246,27 @@ function showAnalysisPanel(
         .map((f) => `<div class="file-item"><div class="file-path">📄 ${escapeHtml(f)}</div></div>`)
         .join("");
 
+  // Render semantic changes
+  const semanticChangesHtml = report.semanticChanges.length > 0
+    ? report.semanticChanges
+        .map((sc: SemanticChange) => {
+          const badge = getSeverityBadge(sc.severity);
+          return `<div class="semantic-item" onclick="openProjectFile('${escapeAttr(sc.file)}')" title="Click to open in editor">
+            <div class="semantic-header">
+              <span class="file-link">⚡ <strong>${escapeHtml(sc.file)}</strong></span>
+              ${badge}
+            </div>
+            <div class="semantic-desc">${escapeHtml(sc.description)}</div>
+            <div class="semantic-diff">
+              <div class="semantic-old"><span class="diff-label">OLD:</span> <code>${escapeHtml(sc.oldBehavior)}</code></div>
+              <div class="semantic-new"><span class="diff-label">NEW:</span> <code>${escapeHtml(sc.newBehavior)}</code></div>
+            </div>
+            ${sc.evidence ? `<div class="semantic-evidence"><span class="evidence-label">Evidence:</span> ${escapeHtml(sc.evidence)}</div>` : ""}
+          </div>`;
+        })
+        .join("")
+    : '<div class="empty-state">No semantic/behavioral changes detected beyond formatting.</div>';
+
   // Render affected files list
   const affectedFilesHtml = report.affectedFiles.length > 0
     ? report.affectedFiles
@@ -257,6 +278,7 @@ function showAnalysisPanel(
               ${badge}
             </div>
             <div class="affected-reason">${escapeHtml(af.reason)}</div>
+            ${af.evidence ? `<div class="semantic-evidence"><span class="evidence-label">Evidence:</span> ${escapeHtml(af.evidence)}</div>` : ""}
           </div>`;
         })
         .join("")
@@ -525,6 +547,80 @@ function showAnalysisPanel(
     font-style: italic;
     padding: 6px 0;
   }
+
+  /* Semantic change cards */
+  .semantic-item {
+    background: var(--vscode-textCodeBlock-background, rgba(0, 0, 0, 0.2));
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    padding: 12px;
+    margin-bottom: 8px;
+    cursor: pointer;
+    transition: background 0.15s ease;
+  }
+  .semantic-item:hover {
+    background: var(--item-hover-bg);
+  }
+
+  .semantic-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 6px;
+  }
+
+  .semantic-desc {
+    font-size: 13px;
+    margin-bottom: 8px;
+    color: var(--vscode-foreground);
+  }
+
+  .semantic-diff {
+    font-family: var(--vscode-editor-font-family, monospace);
+    font-size: 12px;
+    border-radius: 4px;
+    overflow: hidden;
+    margin-bottom: 8px;
+  }
+
+  .semantic-old {
+    background: rgba(248, 81, 73, 0.12);
+    padding: 6px 10px;
+    border-left: 3px solid rgba(248, 81, 73, 0.6);
+  }
+
+  .semantic-new {
+    background: rgba(46, 160, 67, 0.12);
+    padding: 6px 10px;
+    border-left: 3px solid rgba(46, 160, 67, 0.6);
+  }
+
+  .diff-label {
+    font-weight: 700;
+    font-size: 11px;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+    opacity: 0.7;
+    margin-right: 6px;
+  }
+
+  .semantic-old code,
+  .semantic-new code {
+    font-family: inherit;
+    background: none;
+    padding: 0;
+  }
+
+  .semantic-evidence,
+  .evidence-label {
+    font-size: 12px;
+    color: var(--vscode-descriptionForeground, #999999);
+  }
+
+  .evidence-label {
+    font-weight: 600;
+    margin-right: 4px;
+  }
 </style>
 </head>
 <body>
@@ -563,6 +659,9 @@ function showAnalysisPanel(
 
   <div class="section-title">Summary</div>
   <p class="summary-text">${escapeHtml(report.summary)}</p>
+
+  <div class="section-title">Semantic Changes</div>
+  <div>${semanticChangesHtml}</div>
 
   <div class="section-title">Downstream Affected Files</div>
   <div>${affectedFilesHtml}</div>
