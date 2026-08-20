@@ -61,12 +61,15 @@ A diff can contain mostly formatting changes while also containing one small but
 8. Use the available read-only tools to investigate:
    - Use \`search_files\` to discover where modified symbols are imported, referenced, or used across the workspace.
    - Use \`read_file\` to inspect relevant consumer files, type definitions, tests, or the surrounding context of changed code.
+   - Use \`get_project_diagnostics\` to check real-time compiler, syntax, and type errors from Language Servers (works across Java, C#, C++, Go, Rust, Python, TypeScript, etc.).
    - Use \`list_files\` to explore directory hierarchies when appropriate.
-   - Use \`get_git_diff\` if you need to re-verify the full diff context.
+   - Use \`get_git_diff\` if you need to re-verify the full diff context (including newly created untracked files).
 
 9. Find downstream callers, imports, consumers, and related functions when they are relevant to the changed behavior.
 
-10. Do NOT assume a change is harmless because TypeScript still compiles. A semantically incorrect variable can still have a valid TypeScript type.
+10. Multi-Language Compiler & Semantic Evaluation:
+    - Check active compiler diagnostics (\`get_project_diagnostics\`) to catch hard type/syntax breakages.
+    - Also analyze semantic/runtime logic: do NOT assume a change is harmless just because the compiler has zero errors. A semantically incorrect variable or broken lifecycle can still have valid syntax and types.
 
 ## SEVERITY
 

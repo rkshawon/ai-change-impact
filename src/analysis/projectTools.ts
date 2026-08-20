@@ -251,15 +251,121 @@ export async function listFiles(
 
 /*
  * -----------------------------------------------------------------
- * get_git_diff
+ * Project Diagnostics & Multi-Language Support
+ * -----------------------------------------------------------------
+ */
+
+export interface ProjectDiagnostic {
+  filePath: string;
+  line: number;
+  column: number;
+  severity: "error" | "warning" | "info";
+  source?: string;
+  code?: string | number;
+  message: string;
+}
+
+/**
+ * Format project diagnostics into a readable string for AI investigation tools.
+ */
+export function formatDiagnostics(
+  diagnostics: ProjectDiagnostic[],
+  filterPath?: string,
+): string {
+  if (!diagnostics || diagnostics.length === 0) {
+    return "0 compiler/type diagnostics found. All language checks clean.";
+  }
+
+  let filtered = diagnostics;
+  if (filterPath && filterPath.trim()) {
+    const normFilter = filterPath.trim().replace(/\\/g, "/");
+    filtered = diagnostics.filter((d) =>
+      d.filePath.replace(/\\/g, "/").includes(normFilter),
+    );
+  }
+
+  if (filtered.length === 0) {
+    return `No compiler diagnostics found matching path "${filterPath}".`;
+  }
+
+  return filtered
+    .map((d) => {
+      const src = d.source ? ` [${d.source}]` : "";
+      const code = d.code !== undefined ? ` (${d.code})` : "";
+      const sev = d.severity.toUpperCase();
+      return `[${sev}] ${d.filePath}:${d.line}:${d.column}${src}${code} - ${d.message}`;
+    })
+    .join("\n");
+}
+
+/*
+ * -----------------------------------------------------------------
+ * get_git_diff & Untracked Files
  * -----------------------------------------------------------------
  */
 
 /**
- * Get the current Git diff for the workspace.
+ * Discover untracked files in the workspace.
+ */
+export async function getUntrackedFiles(
+  workspaceRoot: string,
+): Promise<string[]> {
+  return new Promise((resolve) => {
+    execFile(
+      "git",
+      ["ls-files", "--others", "--exclude-standard"],
+      {
+        cwd: workspaceRoot,
+        windowsHide: true,
+        maxBuffer: 2 * 1024 * 1024,
+      },
+      (error, stdout) => {
+        if (error || !stdout) {
+          resolve([]);
+          return;
+        }
+
+        const files = stdout
+          .split(/\r?\n/)
+          .map((f) => f.trim())
+          .filter(Boolean);
+        resolve(files);
+      },
+    );
+  });
+}
+
+/**
+ * Synthesize a unified diff representation for an untracked new file.
+ */
+async function synthesizeNewFileDiff(
+  workspaceRoot: string,
+  relPath: string,
+): Promise<string | null> {
+  try {
+    const content = await readFile(workspaceRoot, relPath);
+    const lines = content.split(/\r?\n/);
+    const lineCount = lines.length;
+    const normPath = relPath.replace(/\\/g, "/");
+
+    let diff = `diff --git a/${normPath} b/${normPath}\n`;
+    diff += `new file mode 100644\n`;
+    diff += `--- /dev/null\n`;
+    diff += `+++ b/${normPath}\n`;
+    diff += `@@ -0,0 +1,${lineCount} @@\n`;
+    diff += lines.map((l) => `+${l}`).join("\n");
+    diff += "\n";
+    return diff;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Get the current Git diff for the workspace including untracked new files.
  */
 export async function getGitDiff(workspaceRoot: string): Promise<string> {
-  return new Promise((resolve, reject) => {
+  const trackedDiff = await new Promise<string>((resolve, reject) => {
     execFile(
       "git",
       ["diff", "HEAD", "--unified=3"],
@@ -273,9 +379,31 @@ export async function getGitDiff(workspaceRoot: string): Promise<string> {
           reject(new Error(stderr.trim() || error.message));
           return;
         }
-
-        resolve(stdout);
+        resolve(stdout || "");
       },
     );
   });
+
+  const untracked = await getUntrackedFiles(workspaceRoot);
+  if (untracked.length === 0) {
+    return trackedDiff;
+  }
+
+  const newFileDiffs: string[] = [];
+  // Limit untracked file synthesis to avoid overloading memory for huge batches
+  for (const file of untracked.slice(0, 30)) {
+    const diff = await synthesizeNewFileDiff(workspaceRoot, file);
+    if (diff) {
+      newFileDiffs.push(diff);
+    }
+  }
+
+  if (newFileDiffs.length === 0) {
+    return trackedDiff;
+  }
+
+  return (
+    (trackedDiff ? trackedDiff.trimEnd() + "\n\n" : "") +
+    newFileDiffs.join("\n")
+  );
 }

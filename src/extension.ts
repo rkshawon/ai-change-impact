@@ -2,8 +2,15 @@ import * as vscode from "vscode";
 import { execFile } from "child_process";
 import * as dotenv from "dotenv";
 import * as path from "path";
-import type { AIProvider, ImpactReport, Severity, SemanticChange } from "./ai/AIProvider";
+import type {
+  AIProvider,
+  ImpactReport,
+  Severity,
+  SemanticChange,
+  ProjectDiagnostic,
+} from "./ai/AIProvider";
 import { GeminiProvider } from "./ai/GeminiProvider";
+import * as projectTools from "./analysis/projectTools";
 
 export function activate(context: vscode.ExtensionContext) {
   /*
@@ -72,6 +79,59 @@ export function activate(context: vscode.ExtensionContext) {
 }
 
 /**
+ * Collect active compiler and language-server diagnostics across the workspace.
+ * Works universally for Java, C#, C++, Go, Rust, Python, TypeScript, etc.
+ */
+function collectWorkspaceDiagnostics(workspacePath: string): ProjectDiagnostic[] {
+  const allDiagnostics = vscode.languages.getDiagnostics();
+  const results: ProjectDiagnostic[] = [];
+  const normWorkspace = workspacePath.replace(/\\/g, "/").toLowerCase();
+
+  for (const [uri, diags] of allDiagnostics) {
+    if (!uri || uri.scheme !== "file") {
+      continue;
+    }
+    const fsPath = uri.fsPath;
+    const normFsPath = fsPath.replace(/\\/g, "/").toLowerCase();
+
+    if (!normFsPath.startsWith(normWorkspace)) {
+      continue;
+    }
+
+    const relPath = path.relative(workspacePath, fsPath).replace(/\\/g, "/");
+
+    for (const d of diags) {
+      let severity: "error" | "warning" | "info" = "info";
+      if (d.severity === vscode.DiagnosticSeverity.Error) {
+        severity = "error";
+      } else if (d.severity === vscode.DiagnosticSeverity.Warning) {
+        severity = "warning";
+      }
+
+      const codeVal = typeof d.code === "object" && d.code ? d.code.value : d.code;
+
+      results.push({
+        filePath: relPath,
+        line: d.range.start.line + 1,
+        column: d.range.start.character + 1,
+        severity,
+        source: d.source || undefined,
+        code: codeVal !== undefined ? String(codeVal) : undefined,
+        message: d.message,
+      });
+    }
+  }
+
+  // Sort errors first, then warnings
+  results.sort((a, b) => {
+    const score = (s: string) => (s === "error" ? 0 : s === "warning" ? 1 : 2);
+    return score(a.severity) - score(b.severity);
+  });
+
+  return results;
+}
+
+/**
  * Main Change Guard action.
  *
  * Triggered from Command Palette, Status bar, or Source Control.
@@ -96,12 +156,34 @@ async function previewChanges(): Promise<void> {
 
     /*
      * -------------------------------------------------------
-     * Get current changes
+     * 1. Get changed and untracked files
      * -------------------------------------------------------
      */
-    const diff = await runGit(["diff", "HEAD", "--unified=3"], workspacePath);
+    const changedFilesOutput = await runGit(
+      ["diff", "HEAD", "--name-only"],
+      workspacePath,
+    );
 
-    if (!diff.trim()) {
+    const trackedChangedFiles = changedFilesOutput
+      .split(/\r?\n/)
+      .map((file) => file.trim())
+      .filter(Boolean);
+
+    const untrackedFiles = await projectTools.getUntrackedFiles(workspacePath);
+
+    // Merge and deduplicate all modified + newly created files
+    const allChangedFiles = Array.from(
+      new Set([...trackedChangedFiles, ...untrackedFiles]),
+    );
+
+    /*
+     * -------------------------------------------------------
+     * 2. Get full Git diff (including untracked new files)
+     * -------------------------------------------------------
+     */
+    const diff = await projectTools.getGitDiff(workspacePath);
+
+    if (!diff.trim() && allChangedFiles.length === 0) {
       vscode.window.showInformationMessage(
         "Change Guard: No changes detected.",
       );
@@ -110,24 +192,17 @@ async function previewChanges(): Promise<void> {
 
     /*
      * -------------------------------------------------------
-     * Get changed files
+     * 3. Collect universal compiler / Language Server diagnostics
      * -------------------------------------------------------
      */
-    const changedFilesOutput = await runGit(
-      ["diff", "HEAD", "--name-only"],
-      workspacePath,
-    );
+    const diagnostics = collectWorkspaceDiagnostics(workspacePath);
 
-    const changedFiles = changedFilesOutput
-      .split(/\r?\n/)
-      .map((file) => file.trim())
-      .filter(Boolean);
-
-    console.log("Change Guard - changed files:", changedFiles);
+    console.log("Change Guard - changed files:", allChangedFiles);
+    console.log("Change Guard - active diagnostics:", diagnostics.length);
 
     /*
      * -------------------------------------------------------
-     * Run AI investigation and analysis with progress indicator
+     * 4. Run AI investigation and analysis with progress indicator
      * -------------------------------------------------------
      */
     const report = await vscode.window.withProgress(
@@ -141,23 +216,27 @@ async function previewChanges(): Promise<void> {
 
         return provider.analyzeChanges({
           workspacePath,
-          changedFiles,
+          changedFiles: allChangedFiles,
           diff,
+          diagnostics,
         });
       },
     );
 
     /*
      * -------------------------------------------------------
-     * Open analysis panel
+     * 5. Open analysis panel
      * -------------------------------------------------------
      */
-    showAnalysisPanel(workspacePath, changedFiles, diff, report);
+    showAnalysisPanel(workspacePath, allChangedFiles, untrackedFiles, diff, report);
+
+    const errorCount = (report.diagnostics || []).filter((d) => d.severity === "error").length;
+    const diagMsg = errorCount > 0 ? ` [${errorCount} compiler error${errorCount === 1 ? "" : "s"}]` : "";
 
     vscode.window.showInformationMessage(
-      `Change Guard: Impact analysis complete for ${changedFiles.length} file${
-        changedFiles.length === 1 ? "" : "s"
-      } (${report.severity.toUpperCase()} severity).`,
+      `Change Guard: Impact analysis complete for ${allChangedFiles.length} file${
+        allChangedFiles.length === 1 ? "" : "s"
+      } (${report.severity.toUpperCase()} severity)${diagMsg}.`,
     );
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -197,6 +276,7 @@ function getSeverityBadge(severity: Severity): string {
 function showAnalysisPanel(
   workspacePath: string,
   changedFiles: string[],
+  untrackedFiles: string[],
   diff: string,
   report: ImpactReport,
 ): void {
@@ -238,23 +318,87 @@ function showAnalysisPanel(
   const escapedWorkspace = escapeHtml(workspacePath);
   const escapedDiff = escapeHtml(diff);
   const overallSeverityBadge = getSeverityBadge(report.severity);
+  const untrackedSet = new Set(untrackedFiles.map((f) => f.replace(/\\/g, "/")));
 
-  // Render changed files list with items
+  // Render changed files list with [NEW] tags where applicable
   const changedFilesHtml = report.changedFiles.length > 0
     ? report.changedFiles
         .map((cf) => {
+          const normPath = cf.path.replace(/\\/g, "/");
+          const isNew = untrackedSet.has(normPath);
+          const newBadge = isNew ? '<span class="new-badge">NEW</span> ' : "";
           const changesHtml = cf.changes && cf.changes.length > 0
             ? `<ul class="sub-changes">${cf.changes.map((c) => `<li>${escapeHtml(c)}</li>`).join("")}</ul>`
             : "";
-          return `<div class="file-item">
-            <div class="file-path">📄 <strong>${escapeHtml(cf.path)}</strong></div>
+          return `<div class="file-item" onclick="openProjectFile('${escapeAttr(cf.path)}')" style="cursor:pointer;" title="Click to open">
+            <div class="file-path">${newBadge}📄 <strong>${escapeHtml(cf.path)}</strong></div>
             ${changesHtml}
           </div>`;
         })
         .join("")
     : changedFiles
-        .map((f) => `<div class="file-item"><div class="file-path">📄 ${escapeHtml(f)}</div></div>`)
+        .map((f) => {
+          const normPath = f.replace(/\\/g, "/");
+          const isNew = untrackedSet.has(normPath);
+          const newBadge = isNew ? '<span class="new-badge">NEW</span> ' : "";
+          return `<div class="file-item" onclick="openProjectFile('${escapeAttr(f)}')" style="cursor:pointer;" title="Click to open">
+            <div class="file-path">${newBadge}📄 ${escapeHtml(f)}</div>
+          </div>`;
+        })
         .join("");
+
+  // Render diagnostics section
+  const diagnosticsList = report.diagnostics || [];
+  const errorDiags = diagnosticsList.filter((d) => d.severity === "error");
+  const warnDiags = diagnosticsList.filter((d) => d.severity === "warning");
+
+  let diagnosticsHtml = "";
+  if (diagnosticsList.length > 0) {
+    const diagItemsHtml = diagnosticsList
+      .slice(0, 30) // Limit display items to top 30
+      .map((d) => {
+        const sevClass = d.severity === "error" ? "diag-sev-error" : "diag-sev-warning";
+        const sevIcon = d.severity === "error" ? "🔴 ERROR" : "🟡 WARN";
+        const srcBadge = d.source ? `<span class="source-badge">${escapeHtml(d.source)}</span>` : "";
+        const codeText = d.code !== undefined ? ` [${escapeHtml(String(d.code))}]` : "";
+
+        return `<div class="diag-item" onclick="openProjectFile('${escapeAttr(d.filePath)}', ${d.line})" title="Click to jump to line ${d.line}">
+          <div class="diag-header">
+            <span class="file-link">📍 <strong>${escapeHtml(d.filePath)}:${d.line}:${d.column}</strong></span>
+            <div class="header-badges">
+              ${srcBadge}
+              <span class="diag-badge ${sevClass}">${sevIcon}</span>
+            </div>
+          </div>
+          <div class="diag-msg">${escapeHtml(d.message)}${codeText}</div>
+        </div>`;
+      })
+      .join("");
+
+    const extraNotice = diagnosticsList.length > 30
+      ? `<div class="empty-state">... and ${diagnosticsList.length - 30} more diagnostics.</div>`
+      : "";
+
+    diagnosticsHtml = `
+      <div class="card diag-card">
+        <div class="card-title">
+          <span>⚙️ Language Server & Compiler Diagnostics</span>
+          <span class="badge" style="background: ${errorDiags.length > 0 ? 'rgba(248,81,73,0.3)' : 'rgba(227,179,65,0.3)'}">
+            ${errorDiags.length} Error${errorDiags.length === 1 ? "" : "s"}, ${warnDiags.length} Warning${warnDiags.length === 1 ? "" : "s"}
+          </span>
+        </div>
+        ${diagItemsHtml}
+        ${extraNotice}
+      </div>
+    `;
+  } else {
+    diagnosticsHtml = `
+      <div class="card diag-card">
+        <div class="card-title">⚙️ Language Server & Compiler Diagnostics</div>
+        <div class="clean-state">✅ All Language Server & Compiler checks clean (0 errors reported).</div>
+      </div>
+    `;
+  }
 
   // Render semantic changes
   const semanticChangesHtml = report.semanticChanges.length > 0
@@ -384,13 +528,14 @@ function showAnalysisPanel(
     color: var(--vscode-descriptionForeground, #999999);
     margin-bottom: 10px;
     display: flex;
+    justify-content: space-between;
     align-items: center;
-    gap: 8px;
   }
 
   .file-item {
     padding: 8px 0;
     border-bottom: 1px solid var(--vscode-widget-border, rgba(255, 255, 255, 0.05));
+    transition: background 0.15s ease;
   }
   .file-item:last-child {
     border-bottom: none;
@@ -401,11 +546,77 @@ function showAnalysisPanel(
     font-size: 13px;
   }
 
-  .sub-changes {
-    margin: 6px 0 0 20px;
-    padding: 0;
+  .new-badge {
+    display: inline-block;
+    padding: 1px 6px;
+    border-radius: 4px;
+    font-size: 10px;
+    font-weight: 700;
+    background: rgba(46, 160, 67, 0.25);
+    color: #4cd964;
+    border: 1px solid rgba(46, 160, 67, 0.5);
+    margin-right: 6px;
+    vertical-align: middle;
+  }
+
+  .source-badge {
+    display: inline-block;
+    padding: 1px 6px;
+    border-radius: 4px;
+    font-size: 10px;
+    font-weight: 600;
+    background: rgba(79, 139, 255, 0.15);
+    color: #4daafc;
+    border: 1px solid rgba(79, 139, 255, 0.3);
+  }
+
+  .diag-item {
+    background: var(--vscode-textCodeBlock-background, rgba(0, 0, 0, 0.2));
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    padding: 10px 12px;
+    margin-bottom: 8px;
+    cursor: pointer;
+    transition: background 0.15s ease;
+  }
+  .diag-item:hover {
+    background: var(--item-hover-bg);
+  }
+
+  .diag-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 4px;
+  }
+
+  .diag-msg {
     font-size: 13px;
-    color: var(--vscode-descriptionForeground, #aaaaaa);
+    color: var(--vscode-foreground);
+    line-height: 1.4;
+  }
+
+  .diag-badge {
+    font-size: 10px;
+    font-weight: 700;
+    padding: 2px 6px;
+    border-radius: 4px;
+  }
+  .diag-sev-error {
+    background: rgba(248, 81, 73, 0.2);
+    color: #ff453a;
+    border: 1px solid rgba(248, 81, 73, 0.4);
+  }
+  .diag-sev-warning {
+    background: rgba(227, 179, 65, 0.2);
+    color: #ffd60a;
+    border: 1px solid rgba(227, 179, 65, 0.4);
+  }
+
+  .clean-state {
+    font-size: 13px;
+    color: #4cd964;
+    padding: 4px 0;
   }
 
   pre.diff-view {
@@ -683,11 +894,13 @@ function showAnalysisPanel(
 
 <div class="card">
   <div class="card-title">
-    Changed Files
+    <span>Changed Files</span>
     <span class="badge">${changedFiles.length} file${changedFiles.length === 1 ? "" : "s"}</span>
   </div>
   ${changedFilesHtml}
 </div>
+
+${diagnosticsHtml}
 
 <div class="card">
   <div class="card-title">Current Git Changes</div>
