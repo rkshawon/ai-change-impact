@@ -3,6 +3,8 @@
 'use strict';
 
 const path = require('path');
+const webpack = require('webpack');
+require('dotenv').config();
 
 //@ts-check
 /** @typedef {import('webpack').Configuration} WebpackConfig **/
@@ -41,6 +43,11 @@ const extensionConfig = {
     ]
   },
   devtool: 'nosources-source-map',
+  plugins: [
+    new webpack.DefinePlugin({
+      'process.env.BUILTIN_DEFAULT_GEMINI_KEY': JSON.stringify(process.env.GEMINI_API_KEY || ''),
+    }),
+  ],
   infrastructureLogging: {
     level: "log", // enables logging required for problem matchers
   },
