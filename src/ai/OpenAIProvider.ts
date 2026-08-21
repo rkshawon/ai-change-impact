@@ -60,10 +60,23 @@ const TOOLS = [
     type: "function" as const,
     function: {
       name: "get_git_diff",
-      description: "Get the current Git diff for the workspace.",
+      description: "Get the current Git diff for the workspace (including untracked new files).",
       parameters: {
         type: "object",
         properties: {},
+      },
+    },
+  },
+  {
+    type: "function" as const,
+    function: {
+      name: "get_project_diagnostics",
+      description: "Get active compiler, syntax, and type errors reported by Language Servers for the project (supports Java, C#, C++, Go, Rust, Python, TypeScript, etc.). Optionally filter by file path.",
+      parameters: {
+        type: "object",
+        properties: {
+          path: { type: "string", description: "Optional file path substring to filter diagnostics for." },
+        },
       },
     },
   },
@@ -99,16 +112,26 @@ export class OpenAIProvider implements AIProvider {
       );
     }
 
+    let userContent =
+      `## Workspace Root\n${context.workspacePath}\n\n` +
+      `## Changed Files\n${context.changedFiles.map((f) => `- ${f}`).join("\n")}\n\n` +
+      `## Git Diff\n\`\`\`diff\n${context.diff}\n\`\`\`\n\n`;
+
+    if (context.diagnostics && context.diagnostics.length > 0) {
+      userContent +=
+        `## Active Compiler / Language Diagnostics\n` +
+        `${projectTools.formatDiagnostics(context.diagnostics)}\n\n`;
+    }
+
+    userContent +=
+      "Please investigate the project using the tools to trace dependencies, consumers, compiler diagnostics, and potential impact. " +
+      "Then produce the structured JSON impact report.";
+
     const messages: ChatMessage[] = [
       { role: "system", content: SYSTEM_PROMPT },
       {
         role: "user",
-        content:
-          `## Workspace Root\n${context.workspacePath}\n\n` +
-          `## Changed Files\n${context.changedFiles.map((f) => `- ${f}`).join("\n")}\n\n` +
-          `## Git Diff\n\`\`\`diff\n${context.diff}\n\`\`\`\n\n` +
-          "Please investigate the project using the tools to trace dependencies, consumers, and potential impact. " +
-          "Then produce the structured JSON impact report.",
+        content: userContent,
       },
     ];
 
@@ -149,7 +172,7 @@ export class OpenAIProvider implements AIProvider {
 
       if (!assistantMessage.tool_calls || assistantMessage.tool_calls.length === 0) {
         const text = assistantMessage.content || "";
-        return parseImpactReport(text, context.changedFiles);
+        return parseImpactReport(text, context.changedFiles, context.diagnostics);
       }
 
       // Execute each tool call
@@ -165,6 +188,7 @@ export class OpenAIProvider implements AIProvider {
           call.function.name,
           args,
           context.workspacePath,
+          context.diagnostics || [],
         );
 
         messages.push({
@@ -176,13 +200,14 @@ export class OpenAIProvider implements AIProvider {
     }
 
     const lastMsg = messages[messages.length - 1];
-    return parseImpactReport(lastMsg?.content || "", context.changedFiles);
+    return parseImpactReport(lastMsg?.content || "", context.changedFiles, context.diagnostics);
   }
 
   private async executeTool(
     name: string,
     args: Record<string, unknown>,
     workspaceRoot: string,
+    diagnostics: projectTools.ProjectDiagnostic[] = [],
   ): Promise<string> {
     try {
       switch (name) {
@@ -212,6 +237,11 @@ export class OpenAIProvider implements AIProvider {
         case "get_git_diff": {
           const diff = await projectTools.getGitDiff(workspaceRoot);
           return diff || "(no changes)";
+        }
+
+        case "get_project_diagnostics": {
+          const filterPath = typeof args.path === "string" ? args.path : undefined;
+          return projectTools.formatDiagnostics(diagnostics, filterPath);
         }
 
         default:

@@ -40,6 +40,9 @@ export interface SemanticChange {
   line?: number;
 }
 
+import type { ProjectDiagnostic } from "../analysis/projectTools";
+export type { ProjectDiagnostic };
+
 export interface ImpactReport {
   summary: string;
   severity: Severity;
@@ -48,6 +51,7 @@ export interface ImpactReport {
   semanticChanges: SemanticChange[];
   risks: RiskItem[];
   recommendations: string[];
+  diagnostics?: ProjectDiagnostic[];
   rawText?: string;
 }
 
@@ -63,6 +67,9 @@ export interface AnalysisContext {
 
   /** Full `git diff HEAD --unified=3` output. */
   diff: string;
+
+  /** Active compiler/type diagnostics for the workspace. */
+  diagnostics?: ProjectDiagnostic[];
 }
 
 /**
@@ -103,7 +110,11 @@ export function normalizeSeverity(val: unknown, defaultVal: Severity = "low"): S
  * Safely parse and normalize raw AI text output into a valid ImpactReport.
  * Handles markdown code fences, malformed fields, and fallback generation.
  */
-export function parseImpactReport(rawText: string, changedFilesFallback: string[] = []): ImpactReport {
+export function parseImpactReport(
+  rawText: string,
+  changedFilesFallback: string[] = [],
+  diagnostics?: ProjectDiagnostic[],
+): ImpactReport {
   let cleaned = rawText.trim();
 
   // Strip markdown ```json ... ``` code fence if present
@@ -213,6 +224,7 @@ export function parseImpactReport(rawText: string, changedFilesFallback: string[
       semanticChanges,
       risks,
       recommendations,
+      diagnostics,
       rawText,
     };
   } catch {
@@ -225,6 +237,7 @@ export function parseImpactReport(rawText: string, changedFilesFallback: string[
       semanticChanges: [],
       risks: [],
       recommendations: ["Review the raw analysis below."],
+      diagnostics,
       rawText,
     };
   }
