@@ -46,16 +46,32 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
  */
 
 export class GeminiProvider implements AIProvider {
+  private apiKey: string;
+  private customModel?: string;
+
+  constructor(apiKey?: string, customModel?: string) {
+    this.apiKey =
+      apiKey ||
+      process.env.GEMINI_API_KEY ||
+      (process.env as Record<string, string | undefined>).BUILTIN_DEFAULT_GEMINI_KEY ||
+      "";
+    this.customModel = customModel;
+  }
+
   async analyzeChanges(context: AnalysisContext): Promise<ImpactReport> {
-    const apiKey = process.env.GEMINI_API_KEY;
+    const apiKey = this.apiKey;
 
     if (!apiKey) {
       throw new Error(
-        "Gemini API key is not set. " +
-          "Add GEMINI_API_KEY to a .env file in the extension root, " +
-          "or set it as an environment variable and restart VS Code.",
+        "Gemini API key is not set. Use 'Change Guard: Set Custom API Key' to provide your API key.",
       );
     }
+
+    const candidateModels = [
+      this.customModel || process.env.GEMINI_MODEL || "gemini-3.6-flash",
+      "gemini-3.5-flash-lite",
+      "gemini-2.5-flash",
+    ];
 
     /*
      * Dynamic import to handle ESM module @google/genai package.
@@ -150,7 +166,7 @@ export class GeminiProvider implements AIProvider {
     let lastError: unknown;
 
     // Iterate through candidate models if high demand/503 is hit
-    for (const model of CANDIDATE_MODELS) {
+    for (const model of candidateModels) {
       try {
         return await this.runInvestigationWithModel(
           ai,

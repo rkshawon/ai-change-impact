@@ -10,6 +10,7 @@ import type {
   ProjectDiagnostic,
 } from "./ai/AIProvider";
 import { GeminiProvider } from "./ai/GeminiProvider";
+import { OpenAIProvider } from "./ai/OpenAIProvider";
 import * as projectTools from "./analysis/projectTools";
 
 export function activate(context: vscode.ExtensionContext) {
@@ -23,18 +24,100 @@ export function activate(context: vscode.ExtensionContext) {
 
   /*
    * ---------------------------------------------------------
-   * Command Palette
+   * Command Palette Commands
    * ---------------------------------------------------------
    */
 
   const previewCommand = vscode.commands.registerCommand(
     "change-guard.previewChanges",
     async () => {
-      await previewChanges();
+      await previewChanges(context);
     },
   );
 
-  context.subscriptions.push(previewCommand);
+  const selectProviderCommand = vscode.commands.registerCommand(
+    "change-guard.selectProvider",
+    async () => {
+      const config = vscode.workspace.getConfiguration("changeGuard");
+      const current = config.get<string>("provider", "gemini");
+
+      interface ProviderOption extends vscode.QuickPickItem {
+        provider: "gemini" | "openai";
+      }
+
+      const options: ProviderOption[] = [
+        {
+          label: "$(sparkle) Google Gemini",
+          description: current === "gemini" ? "(Active) Built-in default, Fast & Intelligent" : "Built-in default, Fast & Intelligent",
+          provider: "gemini",
+        },
+        {
+          label: "$(hubot) OpenAI",
+          description: current === "openai" ? "(Active) GPT-4o / GPT-4o-mini" : "GPT-4o / GPT-4o-mini",
+          provider: "openai",
+        },
+      ];
+
+      const selection = await vscode.window.showQuickPick(options, {
+        placeHolder: "Select AI Provider for Change Guard",
+      });
+
+      if (selection) {
+        await config.update("provider", selection.provider, vscode.ConfigurationTarget.Global);
+        vscode.window.showInformationMessage(
+          `Change Guard: AI Provider switched to ${selection.provider === "gemini" ? "Google Gemini" : "OpenAI"}.`,
+        );
+      }
+    },
+  );
+
+  const setApiKeyCommand = vscode.commands.registerCommand(
+    "change-guard.setApiKey",
+    async () => {
+      const config = vscode.workspace.getConfiguration("changeGuard");
+      const currentProvider = config.get<string>("provider", "gemini");
+
+      const providerPick = await vscode.window.showQuickPick(
+        [
+          { label: "Google Gemini", provider: "gemini" },
+          { label: "OpenAI", provider: "openai" },
+        ],
+        { placeHolder: `Select provider to configure custom API Key for (Current active provider: ${currentProvider})` },
+      );
+
+      if (!providerPick) {
+        return;
+      }
+
+      const key = await vscode.window.showInputBox({
+        prompt: `Enter your ${providerPick.label} API Key (Leave empty to revert to default built-in key)`,
+        password: true,
+        ignoreFocusOut: true,
+        placeHolder: providerPick.provider === "gemini" ? "AIzaSy..." : "sk-...",
+      });
+
+      if (key !== undefined) {
+        if (key.trim()) {
+          await context.secrets.store(`apiKey_${providerPick.provider}`, key.trim());
+          vscode.window.showInformationMessage(`Change Guard: Custom ${providerPick.label} API Key saved securely.`);
+        } else {
+          await context.secrets.delete(`apiKey_${providerPick.provider}`);
+          vscode.window.showInformationMessage(`Change Guard: Custom ${providerPick.label} API Key cleared (reverted to default).`);
+        }
+      }
+    },
+  );
+
+  const clearApiKeyCommand = vscode.commands.registerCommand(
+    "change-guard.clearApiKey",
+    async () => {
+      await context.secrets.delete("apiKey_gemini");
+      await context.secrets.delete("apiKey_openai");
+      vscode.window.showInformationMessage("Change Guard: Custom API keys cleared. Reverted to built-in default keys.");
+    },
+  );
+
+  context.subscriptions.push(previewCommand, selectProviderCommand, setApiKeyCommand, clearApiKeyCommand);
 
   /*
    * ---------------------------------------------------------
@@ -112,11 +195,90 @@ function collectWorkspaceDiagnostics(workspacePath: string): ProjectDiagnostic[]
 }
 
 /**
+ * Resolves the configured AI provider and its associated API Key.
+ *
+ * Priority order for API Keys:
+ * 1. User-configured secret (stored securely via context.secrets)
+ * 2. VS Code settings (changeGuard.geminiApiKey / openaiApiKey)
+ * 3. Environment variables (process.env.GEMINI_API_KEY / OPENAI_API_KEY)
+ * 4. Built-in default key (process.env.BUILTIN_DEFAULT_GEMINI_KEY)
+ */
+async function getEffectiveProvider(
+  context: vscode.ExtensionContext,
+): Promise<AIProvider | undefined> {
+  const config = vscode.workspace.getConfiguration("changeGuard");
+  const providerType = config.get<string>("provider", "gemini").toLowerCase();
+
+  if (providerType === "openai") {
+    let apiKey = await context.secrets.get("apiKey_openai");
+    if (!apiKey) {
+      apiKey = config.get<string>("openaiApiKey") || process.env.OPENAI_API_KEY;
+    }
+    if (!apiKey) {
+      apiKey = await vscode.window.showInputBox({
+        prompt: "Enter your OpenAI API Key (or press ESC to cancel)",
+        password: true,
+        ignoreFocusOut: true,
+        placeHolder: "sk-...",
+      });
+      if (!apiKey) {
+        vscode.window.showWarningMessage(
+          "Change Guard: OpenAI API Key is required to run analysis.",
+        );
+        return undefined;
+      }
+      await context.secrets.store("apiKey_openai", apiKey.trim());
+      vscode.window.showInformationMessage(
+        "Change Guard: OpenAI API Key saved securely.",
+      );
+    }
+
+    const model = config.get<string>("openaiModel", "gpt-4o-mini");
+    const baseUrl = config.get<string>(
+      "openaiBaseUrl",
+      "https://api.openai.com/v1",
+    );
+    return new OpenAIProvider(apiKey.trim(), model, baseUrl);
+  }
+
+  // Default: Google Gemini
+  let apiKey = await context.secrets.get("apiKey_gemini");
+  if (!apiKey) {
+    apiKey =
+      config.get<string>("geminiApiKey") ||
+      process.env.GEMINI_API_KEY ||
+      (process.env as Record<string, string | undefined>)
+        .BUILTIN_DEFAULT_GEMINI_KEY;
+  }
+  if (!apiKey) {
+    apiKey = await vscode.window.showInputBox({
+      prompt: "Enter your Google Gemini API Key (or press ESC to cancel)",
+      password: true,
+      ignoreFocusOut: true,
+      placeHolder: "AIzaSy...",
+    });
+    if (!apiKey) {
+      vscode.window.showWarningMessage(
+        "Change Guard: Google Gemini API Key is required to run analysis.",
+      );
+      return undefined;
+    }
+    await context.secrets.store("apiKey_gemini", apiKey.trim());
+    vscode.window.showInformationMessage(
+      "Change Guard: Google Gemini API Key saved securely.",
+    );
+  }
+
+  const model = config.get<string>("geminiModel", "gemini-3.6-flash");
+  return new GeminiProvider(apiKey.trim(), model);
+}
+
+/**
  * Main Change Guard action.
  *
  * Triggered from Command Palette, Status bar, or Source Control.
  */
-async function previewChanges(): Promise<void> {
+async function previewChanges(context: vscode.ExtensionContext): Promise<void> {
   const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
 
   if (!workspaceFolder) {
@@ -125,6 +287,11 @@ async function previewChanges(): Promise<void> {
   }
 
   const workspacePath = workspaceFolder.uri.fsPath;
+
+  const provider = await getEffectiveProvider(context);
+  if (!provider) {
+    return;
+  }
 
   try {
     /*
@@ -192,8 +359,6 @@ async function previewChanges(): Promise<void> {
         cancellable: false,
       },
       async () => {
-        const provider: AIProvider = new GeminiProvider();
-
         return provider.analyzeChanges({
           workspacePath,
           changedFiles: allChangedFiles,

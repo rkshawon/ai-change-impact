@@ -17,42 +17,54 @@
 
 ## Getting Started
 
-### 1. Prerequisites
+### Prerequisites
 - VS Code `1.125.0` or newer.
-- Git initialized repository with active changes (unstaged or staged).
-- Google Gemini API Key.
+- A Git repository with active changes (unstaged or staged).
 
-### 2. Configuration
-Change Guard looks for your API key in a `.env` file within the extension directory or your environment variables:
+---
 
-```env
-GEMINI_API_KEY=your_gemini_api_key_here
-```
+## AI Providers & API Key Configuration
 
-*(Optional)* You can also specify the Gemini model (defaults to `gemini-3.6-flash` with automatic fallback to `gemini-3.5-flash-lite` and `gemini-2.5-flash`):
-```env
-GEMINI_MODEL=gemini-3.6-flash
-```
+Change Guard works **out-of-the-box** with zero setup required using the built-in Gemini engine. You also have full flexibility to connect your own API keys or switch models anytime.
+
+### Supported AI Providers
+- **Google Gemini (Default):** Fast, multimodal codebase analysis (`gemini-3.6-flash`, `gemini-3.5-flash-lite`, `gemini-2.5-flash`).
+- **OpenAI:** GPT-4o, GPT-4o-mini, or any custom OpenAI-compatible endpoint.
+
+### How Users Configure API Keys & Providers
+
+1. **Use Out-of-the-Box (Default):**
+   - No configuration needed. Just press `Ctrl+Alt+G` to start analyzing changes!
+2. **Switch AI Provider:**
+   - Press `Ctrl+Shift+P` -> `Change Guard: Select AI Provider` -> Choose **Google Gemini** or **OpenAI**.
+3. **Use Your Own Custom API Key:**
+   - Press `Ctrl+Shift+P` -> `Change Guard: Set Custom API Key`.
+   - Select your provider and paste your key. It will be stored securely in VS Code's encrypted SecretStorage.
+4. **Revert to Default Built-in Key:**
+   - Press `Ctrl+Shift+P` -> `Change Guard: Clear Custom API Key`.
 
 ---
 
 ## How to Use
 
-1. **Make code changes** in your repository.
-2. Trigger **Change Guard** via any of the following methods:
+1. **Make code changes** in your Git repository.
+2. Trigger **Change Guard**:
    - **Keyboard Shortcut:** `Ctrl+Alt+G` (or `Cmd+Alt+G` on macOS).
-   - **Status Bar:** Click the `$(shield) Change Guard` item in the bottom right corner.
-   - **Source Control View:** Click the Change Guard icon in the Source Control title bar.
+   - **Status Bar:** Click `$(shield) Change Guard` in the bottom right corner.
+   - **Source Control View:** Click the Change Guard icon in the SCM title bar.
    - **Command Palette:** Run `Ctrl+Shift+P` -> `Change Guard: Preview Changes`.
-3. An interactive report panel will open displaying the detected impact, risks, affected areas, and recommendations.
+3. An interactive webview panel opens displaying the blast radius, semantic changes, compiler diagnostics, and recommendations.
 
 ---
 
 ## Extension Settings
 
-Change Guard contributes the following commands and keybindings:
+Change Guard contributes the following settings (`Ctrl+,` -> search `Change Guard`):
 
-* `change-guard.previewChanges`: Opens the impact analysis panel for current changes (Shortcut: `Ctrl+Alt+G`).
+* `changeGuard.provider`: Active AI provider (`"gemini"` or `"openai"`).
+* `changeGuard.geminiModel`: Gemini model name (default: `"gemini-3.6-flash"`).
+* `changeGuard.openaiModel`: OpenAI model name (default: `"gpt-4o-mini"`).
+* `changeGuard.openaiBaseUrl`: Custom API endpoint (default: `"https://api.openai.com/v1"`).
 
 ---
 

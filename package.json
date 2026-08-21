@@ -2,7 +2,7 @@
   "name": "change-guard",
   "displayName": "Change Guard",
   "description": "AI-powered code change impact analysis",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "publisher": "rkshawon",
   "repository": {
     "type": "git",
@@ -36,8 +36,53 @@
       {
         "command": "change-guard.previewChanges",
         "title": "Change Guard: Preview Changes"
+      },
+      {
+        "command": "change-guard.selectProvider",
+        "title": "Change Guard: Select AI Provider (Gemini / OpenAI)"
+      },
+      {
+        "command": "change-guard.setApiKey",
+        "title": "Change Guard: Set Custom API Key"
+      },
+      {
+        "command": "change-guard.clearApiKey",
+        "title": "Change Guard: Clear Custom API Key (Revert to Default)"
       }
     ],
+    "configuration": {
+      "title": "Change Guard",
+      "properties": {
+        "changeGuard.provider": {
+          "type": "string",
+          "enum": [
+            "gemini",
+            "openai"
+          ],
+          "enumDescriptions": [
+            "Google Gemini API (Default, Fast, Multimodal)",
+            "OpenAI API (GPT-4o, GPT-4o-mini)"
+          ],
+          "default": "gemini",
+          "description": "AI provider used to analyze code changes."
+        },
+        "changeGuard.geminiModel": {
+          "type": "string",
+          "default": "gemini-3.6-flash",
+          "description": "Google Gemini model to use for analysis."
+        },
+        "changeGuard.openaiModel": {
+          "type": "string",
+          "default": "gpt-4o-mini",
+          "description": "OpenAI model to use for analysis."
+        },
+        "changeGuard.openaiBaseUrl": {
+          "type": "string",
+          "default": "https://api.openai.com/v1",
+          "description": "Custom API base URL for OpenAI-compatible providers."
+        }
+      }
+    },
     "menus": {
       "scm/title": [
         {
