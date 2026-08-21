@@ -3,10 +3,27 @@
   "displayName": "Change Guard",
   "description": "AI-powered code change impact analysis",
   "version": "0.0.1",
+  "publisher": "rkshawon",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/rkshawon/ai-change-impact"
+  },
+  "license": "MIT",
+  "keywords": [
+    "git",
+    "diff",
+    "ai",
+    "impact-analysis",
+    "code-review",
+    "gemini"
+  ],
   "engines": {
     "vscode": "^1.125.0"
   },
   "categories": [
+    "Programming Languages",
+    "Linters",
+    "SCM Providers",
     "Other"
   ],
   "activationEvents": [

@@ -1,71 +1,61 @@
-# ai-change-impact README
+# Change Guard
 
-This is the README for your extension "ai-change-impact". After writing up a brief description, we recommend including the following sections.
-
-## Features
-
-Describe specific features of your extension including screenshots of your extension in action. Image paths are relative to this README file.
-
-For example if there is an image subfolder under your extension project workspace:
-
-\!\[feature X\]\(images/feature-x.png\)
-
-> Tip: Many popular extensions utilize animations. This is an excellent way to show off your extension! We recommend short, focused animations that are easy to follow.
-
-## Requirements
-
-If you have any requirements or dependencies, add a section describing those and how to install and configure them.
-
-## Extension Settings
-
-Include if your extension adds any VS Code settings through the `contributes.configuration` extension point.
-
-For example:
-
-This extension contributes the following settings:
-
-* `myExtension.enable`: Enable/disable this extension.
-* `myExtension.thing`: Set to `blah` to do something.
-
-## Known Issues
-
-Calling out known issues can help limit users opening duplicate issues against your extension.
-
-## Release Notes
-
-Users appreciate release notes as you update your extension.
-
-### 1.0.0
-
-Initial release of ...
-
-### 1.0.1
-
-Fixed issue #.
-
-### 1.1.0
-
-Added features X, Y, and Z.
+**Change Guard** is an AI-powered VS Code extension that analyzes the impact and blast radius of your code changes before you commit. Powered by Gemini, Change Guard inspects your Git diffs, explores codebase dependencies, detects potential language/type errors, and delivers structured, actionable impact reports right inside VS Code.
 
 ---
 
-## Following extension guidelines
+## Features
 
-Ensure that you've read through the extensions guidelines and follow the best practices for creating your extension.
+- **Semantic Change Analysis:** Automatically summarizes modified, added, and deleted files with high-level descriptions of intent.
+- **Blast Radius & Dependency Tracking:** Identifies downstream components, consumers, and APIs that could be affected by your changes.
+- **Language & Runtime Error Detection:** Checks for potential breaking type mismatches, missing imports, syntax inconsistencies, and runtime issues.
+- **Interactive Impact Webview:** Visualizes changes by severity (Critical, Warning, Info) with detailed rationales and remediation suggestions.
+- **Agentic Codebase Inspection:** Leverages project tools and symbol search to verify impact across your repository before generating reports.
+- **Seamless Git & IDE Integration:** Trigger analysis with one click from the Status Bar, Source Control (SCM) title bar, or keyboard shortcut.
 
-* [Extension Guidelines](https://code.visualstudio.com/api/references/extension-guidelines)
+---
 
-## Working with Markdown
+## Getting Started
 
-You can author your README using Visual Studio Code. Here are some useful editor keyboard shortcuts:
+### 1. Prerequisites
+- VS Code `1.125.0` or newer.
+- Git initialized repository with active changes (unstaged or staged).
+- Google Gemini API Key.
 
-* Split the editor (`Cmd+\` on macOS or `Ctrl+\` on Windows and Linux).
-* Toggle preview (`Shift+Cmd+V` on macOS or `Shift+Ctrl+V` on Windows and Linux).
-* Press `Ctrl+Space` (Windows, Linux, macOS) to see a list of Markdown snippets.
+### 2. Configuration
+Change Guard looks for your API key in a `.env` file within the extension directory or your environment variables:
 
-## For more information
+```env
+GEMINI_API_KEY=your_gemini_api_key_here
+```
 
-* [Visual Studio Code's Markdown Support](http://code.visualstudio.com/docs/languages/markdown)
-* [Markdown Syntax Reference](https://help.github.com/articles/markdown-basics/)
+*(Optional)* You can also specify the Gemini model (defaults to `gemini-3.6-flash` with automatic fallback to `gemini-3.5-flash-lite` and `gemini-2.5-flash`):
+```env
+GEMINI_MODEL=gemini-3.6-flash
+```
 
-**Enjoy!**
+---
+
+## How to Use
+
+1. **Make code changes** in your repository.
+2. Trigger **Change Guard** via any of the following methods:
+   - **Keyboard Shortcut:** `Ctrl+Alt+G` (or `Cmd+Alt+G` on macOS).
+   - **Status Bar:** Click the `$(shield) Change Guard` item in the bottom right corner.
+   - **Source Control View:** Click the Change Guard icon in the Source Control title bar.
+   - **Command Palette:** Run `Ctrl+Shift+P` -> `Change Guard: Preview Changes`.
+3. An interactive report panel will open displaying the detected impact, risks, affected areas, and recommendations.
+
+---
+
+## Extension Settings
+
+Change Guard contributes the following commands and keybindings:
+
+* `change-guard.previewChanges`: Opens the impact analysis panel for current changes (Shortcut: `Ctrl+Alt+G`).
+
+---
+
+## License
+
+This project is licensed under the [MIT License](LICENSE).

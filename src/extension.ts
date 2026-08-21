@@ -55,26 +55,6 @@ export function activate(context: vscode.ExtensionContext) {
 
   context.subscriptions.push(statusBarItem);
 
-  /*
-   * ---------------------------------------------------------
-   * Source Control
-   * ---------------------------------------------------------
-   *
-   * This creates a button in the Source Control view.
-   */
-
-  const sourceControl = vscode.scm.createSourceControl(
-    "change-guard",
-    "Change Guard",
-  );
-
-  sourceControl.createResourceGroup(
-    "changeGuard",
-    "Change Guard",
-  );
-
-  context.subscriptions.push(sourceControl);
-
   console.log("Change Guard UI initialized.");
 }
 
