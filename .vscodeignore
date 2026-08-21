@@ -14,3 +14,7 @@ vsc-extension-quickstart.md
 **/.vscode-test.*
 .env
 .env.*
+logo_*.png
+delta_*.png
+icon_with_text.png
+icon_128.png

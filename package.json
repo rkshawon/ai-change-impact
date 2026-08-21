@@ -2,7 +2,7 @@
   "name": "change-guard",
   "displayName": "Change Guard",
   "description": "AI-powered code change impact analysis",
-  "version": "0.0.3",
+  "version": "0.0.4",
   "publisher": "rkshawon",
   "repository": {
     "type": "git",
