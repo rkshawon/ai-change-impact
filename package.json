@@ -38,6 +38,10 @@
         "title": "Change Guard: Preview Changes"
       },
       {
+        "command": "change-guard.auditHistory",
+        "title": "Change Guard: Audit History"
+      },
+      {
         "command": "change-guard.selectProvider",
         "title": "Change Guard: Select AI Provider (Gemini / OpenAI)"
       },

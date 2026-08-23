@@ -8,6 +8,9 @@ import type {
   Severity,
   SemanticChange,
   ProjectDiagnostic,
+  HistoryAuditReport,
+  BugCulprit,
+  CommitAuditStatus,
 } from "./ai/AIProvider";
 import { GeminiProvider } from "./ai/GeminiProvider";
 import { OpenAIProvider } from "./ai/OpenAIProvider";
@@ -32,6 +35,13 @@ export function activate(context: vscode.ExtensionContext) {
     "change-guard.previewChanges",
     async () => {
       await previewChanges(context);
+    },
+  );
+
+  const auditHistoryCommand = vscode.commands.registerCommand(
+    "change-guard.auditHistory",
+    async () => {
+      await auditCommitHistory(context);
     },
   );
 
@@ -117,7 +127,13 @@ export function activate(context: vscode.ExtensionContext) {
     },
   );
 
-  context.subscriptions.push(previewCommand, selectProviderCommand, setApiKeyCommand, clearApiKeyCommand);
+  context.subscriptions.push(
+    previewCommand,
+    auditHistoryCommand,
+    selectProviderCommand,
+    setApiKeyCommand,
+    clearApiKeyCommand,
+  );
 
   /*
    * ---------------------------------------------------------
@@ -395,6 +411,209 @@ async function previewChanges(context: vscode.ExtensionContext): Promise<void> {
 
     vscode.window.showErrorMessage(`Change Guard: ${safeMessage}`);
     console.error("Change Guard error:", error);
+  }
+}
+
+/**
+ * Audit past commit history to detect introduced bugs/regressions or diagnose a specific symptom.
+ */
+async function auditCommitHistory(context: vscode.ExtensionContext): Promise<void> {
+  const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+
+  if (!workspaceFolder) {
+    vscode.window.showErrorMessage("Change Guard: No workspace is open.");
+    return;
+  }
+
+  const workspacePath = workspaceFolder.uri.fsPath;
+
+  const provider = await getEffectiveProvider(context);
+  if (!provider) {
+    return;
+  }
+
+  try {
+    /*
+     * -------------------------------------------------------
+     * Make sure this is a Git repository
+     * -------------------------------------------------------
+     */
+    await runGit(["rev-parse", "--is-inside-work-tree"], workspacePath);
+
+    /*
+     * -------------------------------------------------------
+     * 1. Choose commit range / scope
+     * -------------------------------------------------------
+     */
+    interface ScopeItem extends vscode.QuickPickItem {
+      count?: number;
+      isPick?: boolean;
+      isCustom?: boolean;
+    }
+
+    const scopeOptions: ScopeItem[] = [
+      {
+        label: "$(history) Last 5 Commits",
+        description: "Quick audit of recent commits",
+        count: 5,
+      },
+      {
+        label: "$(git-commit) Last 10 Commits",
+        description: "Recommended: Standard history scan",
+        count: 10,
+      },
+      {
+        label: "$(repo) Last 20 Commits",
+        description: "Deep audit across a larger window",
+        count: 20,
+      },
+      {
+        label: "$(list-unordered) Pick starting commit from Git log...",
+        description: "Select specific commit to audit up to HEAD",
+        isPick: true,
+      },
+      {
+        label: "$(edit) Custom number of commits...",
+        description: "Enter custom depth (e.g. 4, 8, 15)",
+        isCustom: true,
+      },
+    ];
+
+    const selectedScope = await vscode.window.showQuickPick(scopeOptions, {
+      placeHolder: "Select history scope to audit with Change Guard",
+    });
+
+    if (!selectedScope) {
+      return;
+    }
+
+    let commitCount = selectedScope.count || 5;
+
+    if (selectedScope.isPick) {
+      const recentLog = await projectTools.getCommitList(workspacePath, 35);
+      if (recentLog.length === 0) {
+        vscode.window.showInformationMessage("Change Guard: No commits found in Git history.");
+        return;
+      }
+
+      interface CommitPickItem extends vscode.QuickPickItem {
+        count: number;
+      }
+
+      const commitPicks: CommitPickItem[] = recentLog.map((c, idx) => ({
+        label: `$(git-commit) [${c.shortHash}] ${c.message}`,
+        description: `${c.author} • ${c.date}`,
+        detail: `Audit ${idx + 1} commit${idx === 0 ? "" : "s"} (from this commit up to HEAD)`,
+        count: idx + 1,
+      }));
+
+      const chosenCommit = await vscode.window.showQuickPick(commitPicks, {
+        placeHolder: "Select the starting commit to audit up to current HEAD",
+      });
+
+      if (!chosenCommit) {
+        return;
+      }
+
+      commitCount = chosenCommit.count;
+    } else if (selectedScope.isCustom) {
+      const input = await vscode.window.showInputBox({
+        prompt: "Enter number of past commits to audit (1 - 50)",
+        value: "8",
+        validateInput: (v) => {
+          const num = parseInt(v, 10);
+          if (isNaN(num) || num < 1 || num > 50) {
+            return "Please enter a valid integer between 1 and 50.";
+          }
+          return null;
+        },
+      });
+
+      if (!input) {
+        return;
+      }
+
+      commitCount = parseInt(input, 10);
+    }
+
+    /*
+     * -------------------------------------------------------
+     * 2. Ask for optional symptom / bug query
+     * -------------------------------------------------------
+     */
+    const userQuery = await vscode.window.showInputBox({
+      prompt: "Optional: Describe any bug or symptom (or press Enter for a full blind regression audit)",
+      placeHolder: "e.g. Button click not working in modal, API token refresh failing (or leave empty)",
+      ignoreFocusOut: true,
+    });
+
+    if (userQuery === undefined) {
+      return; // ESC pressed
+    }
+
+    const trimmedQuery = userQuery.trim() || undefined;
+
+    /*
+     * -------------------------------------------------------
+     * 3. Fetch commits & diffs
+     * -------------------------------------------------------
+     */
+    const commits = await projectTools.getRecentCommits(workspacePath, commitCount);
+    if (commits.length === 0) {
+      vscode.window.showInformationMessage("Change Guard: No commits found in repository.");
+      return;
+    }
+
+    const diagnostics = collectWorkspaceDiagnostics(workspacePath);
+
+    /*
+     * -------------------------------------------------------
+     * 4. Run AI investigation with progress indicator
+     * -------------------------------------------------------
+     */
+    const report = await vscode.window.withProgress(
+      {
+        location: vscode.ProgressLocation.Notification,
+        title: trimmedQuery
+          ? `Change Guard: Diagnosing issue across ${commits.length} commits...`
+          : `Change Guard: Auditing ${commits.length} commits for regressions...`,
+        cancellable: false,
+      },
+      async () => {
+        return provider.analyzeHistory({
+          workspacePath,
+          commits,
+          userQuery: trimmedQuery,
+          diagnostics,
+        });
+      },
+    );
+
+    /*
+     * -------------------------------------------------------
+     * 5. Open Webview Panel
+     * -------------------------------------------------------
+     */
+    showHistoryAuditPanel(workspacePath, trimmedQuery, report);
+
+    if (report.overallHealth === "clean" && report.issues.length === 0) {
+      vscode.window.showInformationMessage(
+        `Change Guard: All ${report.commitsCount} commits verified healthy (0 regressions detected).`,
+      );
+    } else {
+      const culpritNames = report.issues.map((i) => `[${i.culpritCommit.shortHash}]`).join(", ");
+      vscode.window.showWarningMessage(
+        `Change Guard: ${report.issues.length} issue${report.issues.length === 1 ? "" : "s"} detected! Culprit commit(s): ${culpritNames}.`,
+      );
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const safeMessage = message
+      .replace(/AIza[0-9A-Za-z-_]{35}/g, "AIza***")
+      .replace(/sk-[A-Za-z0-9_-]+/g, "sk-***");
+
+    vscode.window.showErrorMessage(`Change Guard: ${safeMessage}`);
+    console.error("Change Guard History Audit error:", error);
   }
 }
 
@@ -1072,6 +1291,620 @@ ${diagnosticsHtml}
 
   <div class="section-title">Recommendations</div>
   <div>${recommendationsHtml}</div>
+</div>
+
+<script>
+  const vscode = acquireVsCodeApi();
+  function openProjectFile(filePath, line) {
+    const msg = { command: 'openFile', file: filePath };
+    if (typeof line === 'number' && line > 0) {
+      msg.line = line;
+    }
+    vscode.postMessage(msg);
+  }
+</script>
+
+</body>
+</html>
+`;
+}
+
+/**
+ * Show the commit history audit and bug culprit investigation in a Webview panel.
+ */
+function showHistoryAuditPanel(
+  workspacePath: string,
+  userQuery: string | undefined,
+  report: HistoryAuditReport,
+): void {
+  const panel = vscode.window.createWebviewPanel(
+    "changeGuardHistoryAudit",
+    "Change Guard History Audit",
+    vscode.ViewColumn.Beside,
+    {
+      enableScripts: true,
+      retainContextWhenHidden: true,
+    },
+  );
+
+  panel.webview.onDidReceiveMessage(async (message) => {
+    if (message?.command === "openFile" && typeof message.file === "string") {
+      try {
+        const fileUri = vscode.Uri.file(path.join(workspacePath, message.file));
+        const doc = await vscode.workspace.openTextDocument(fileUri);
+
+        const line =
+          typeof message.line === "number" && message.line > 0
+            ? message.line - 1
+            : 0;
+
+        const range = new vscode.Range(line, 0, line, 0);
+
+        await vscode.window.showTextDocument(doc, {
+          preview: true,
+          selection: range,
+        });
+      } catch {
+        vscode.window.showWarningMessage(
+          `Change Guard: Could not open file "${message.file}"`,
+        );
+      }
+    }
+  });
+
+  const escapedWorkspace = escapeHtml(workspacePath);
+  const isTargeted = Boolean(userQuery && userQuery.trim());
+  const modeBadgeText = isTargeted
+    ? `🎯 TARGETED DIAGNOSIS: "${escapeHtml(userQuery!)}"`
+    : "🔍 PROACTIVE BLIND AUDIT";
+
+  const isClean = report.overallHealth === "clean" && report.issues.length === 0;
+
+  const healthBannerHtml = isClean
+    ? `<div class="health-banner health-clean">
+        <span class="health-icon">✅</span>
+        <div class="health-text">
+          <div class="health-title">ALL COMMITS VERIFIED HEALTHY</div>
+          <div class="health-sub">0 bugs, regressions, or broken logic detected across the analyzed range.</div>
+        </div>
+      </div>`
+    : `<div class="health-banner health-alert">
+        <span class="health-icon">⚠️</span>
+        <div class="health-text">
+          <div class="health-title">${report.issues.length} ISSUE${report.issues.length === 1 ? "" : "S"} / REGRESSION${report.issues.length === 1 ? "" : "S"} INTRODUCED</div>
+          <div class="health-sub">Change Guard identified culprit commit(s) responsible for the problems below.</div>
+        </div>
+      </div>`;
+
+  // Render Culprit Issues
+  const issuesHtml = report.issues.length > 0
+    ? report.issues
+        .map((issue: BugCulprit, idx: number) => {
+          const badge = getSeverityBadge(issue.severity);
+          const fileLoc = issue.brokenFile
+            ? `<div class="culprit-file" onclick="openProjectFile('${escapeAttr(issue.brokenFile)}'${issue.brokenLine ? `, ${issue.brokenLine}` : ""})" title="Click to jump to file">
+                📍 <strong>${escapeHtml(issue.brokenFile)}${issue.brokenLine ? `:${issue.brokenLine}` : ""}</strong>
+               </div>`
+            : "";
+
+          const patchHtml = issue.suggestedPatch
+            ? `<div class="patch-box">
+                <div class="patch-header">Suggested Code Patch:</div>
+                <pre class="patch-code">${escapeHtml(issue.suggestedPatch)}</pre>
+               </div>`
+            : "";
+
+          return `
+            <div class="issue-card">
+              <div class="issue-header">
+                <div class="issue-title">#${idx + 1}. ${escapeHtml(issue.issueTitle)}</div>
+                <div>${badge}</div>
+              </div>
+
+              <div class="culprit-box">
+                <div class="culprit-title">🎯 Culprit Commit:</div>
+                <div class="culprit-commit-info">
+                  <span class="commit-tag">[${escapeHtml(issue.culpritCommit.shortHash)}]</span>
+                  <strong>${escapeHtml(issue.culpritCommit.message)}</strong>
+                </div>
+                <div class="culprit-meta">
+                  👤 ${escapeHtml(issue.culpritCommit.author)} • 📅 ${escapeHtml(issue.culpritCommit.date)}
+                </div>
+                ${fileLoc}
+              </div>
+
+              <div class="detail-section">
+                <div class="detail-label">🔍 Root Cause Explanation:</div>
+                <div class="detail-content">${escapeHtml(issue.rootCause)}</div>
+              </div>
+
+              <div class="detail-section">
+                <div class="detail-label">🔬 Evidence & Trace:</div>
+                <div class="detail-content">${escapeHtml(issue.evidence)}</div>
+              </div>
+
+              <div class="detail-section solution-section">
+                <div class="detail-label">🛠️ Solution / Fix:</div>
+                <div class="detail-content">${escapeHtml(issue.solution)}</div>
+                ${patchHtml}
+              </div>
+            </div>
+          `;
+        })
+        .join("")
+    : `<div class="clean-box">✨ No regressions or broken functionality were introduced in the analyzed commits.</div>`;
+
+  // Render Commit Sequence Timeline
+  const timelineHtml = report.commitsList.length > 0
+    ? report.commitsList
+        .map((c: CommitAuditStatus, idx: number) => {
+          const statusClass = c.hasIssues ? "commit-item-culprit" : "commit-item-clean";
+          const statusIcon = c.hasIssues ? "❌ ISSUE INTRODUCED" : "✅ CLEAN";
+          const statusBadgeClass = c.hasIssues ? "badge-culprit" : "badge-clean";
+          const notesText = c.notes ? `<div class="commit-notes">${escapeHtml(c.notes)}</div>` : "";
+
+          return `
+            <div class="commit-timeline-item ${statusClass}">
+              <div class="commit-header">
+                <div class="commit-main">
+                  <span class="commit-index">#${idx + 1}</span>
+                  <span class="commit-hash">[${escapeHtml(c.shortHash)}]</span>
+                  <span class="commit-msg">${escapeHtml(c.message)}</span>
+                </div>
+                <span class="timeline-badge ${statusBadgeClass}">${statusIcon}</span>
+              </div>
+              <div class="commit-author-date">👤 ${escapeHtml(c.author)}</div>
+              ${notesText}
+            </div>
+          `;
+        })
+        .join("")
+    : '<div class="empty-state">No commits listed.</div>';
+
+  // Render Recommendations
+  const recommendationsHtml = report.recommendations.length > 0
+    ? `<ul class="recommendation-list">${report.recommendations
+        .map((rec) => `<li>${escapeHtml(rec)}</li>`)
+        .join("")}</ul>`
+    : '<div class="empty-state">No additional recommendations provided.</div>';
+
+  panel.webview.html = `
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline';" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Change Guard History Audit</title>
+<style>
+  :root {
+    --border-color: var(--vscode-panel-border, #333333);
+    --card-bg: var(--vscode-editor-inactiveSelectionBackground, rgba(255, 255, 255, 0.04));
+    --item-hover-bg: var(--vscode-list-hoverBackground, rgba(255, 255, 255, 0.08));
+  }
+
+  body {
+    font-family: var(--vscode-font-family, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif);
+    color: var(--vscode-foreground, #cccccc);
+    background: var(--vscode-editor-background, #1e1e1e);
+    padding: 24px;
+    line-height: 1.5;
+    margin: 0;
+  }
+
+  .header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 20px;
+  }
+
+  .logo {
+    font-size: 32px;
+  }
+
+  h1 {
+    font-size: 22px;
+    margin: 0;
+    font-weight: 600;
+  }
+
+  .subtitle {
+    color: var(--vscode-descriptionForeground, #888888);
+    font-size: 13px;
+  }
+
+  .mode-pills {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+    margin-top: 8px;
+  }
+
+  .mode-pill {
+    display: inline-flex;
+    align-items: center;
+    padding: 4px 10px;
+    border-radius: 6px;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+  }
+  .mode-pill-targeted {
+    background: rgba(175, 82, 222, 0.2);
+    color: #da8fff;
+    border: 1px solid rgba(175, 82, 222, 0.4);
+  }
+  .mode-pill-blind {
+    background: rgba(79, 139, 255, 0.15);
+    color: #4daafc;
+    border: 1px solid rgba(79, 139, 255, 0.3);
+  }
+  .scope-pill {
+    background: rgba(255, 255, 255, 0.08);
+    color: var(--vscode-foreground);
+    border: 1px solid var(--border-color);
+  }
+
+  .health-banner {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    padding: 16px 20px;
+    border-radius: 8px;
+    margin-bottom: 20px;
+  }
+  .health-clean {
+    background: rgba(46, 160, 67, 0.15);
+    border: 1px solid rgba(46, 160, 67, 0.4);
+  }
+  .health-alert {
+    background: rgba(248, 81, 73, 0.15);
+    border: 1px solid rgba(248, 81, 73, 0.4);
+  }
+  .health-icon {
+    font-size: 28px;
+  }
+  .health-title {
+    font-size: 16px;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+  }
+  .health-clean .health-title {
+    color: #4cd964;
+  }
+  .health-alert .health-title {
+    color: #ff453a;
+  }
+  .health-sub {
+    font-size: 13px;
+    color: var(--vscode-foreground);
+    opacity: 0.9;
+  }
+
+  .card {
+    background: var(--card-bg);
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    padding: 16px 20px;
+    margin-bottom: 20px;
+  }
+
+  .card-title {
+    font-size: 14px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--vscode-descriptionForeground, #999999);
+    margin-bottom: 10px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+
+  .summary-text {
+    font-size: 14px;
+    line-height: 1.6;
+    margin: 0;
+  }
+
+  .section-heading {
+    font-size: 16px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--vscode-foreground);
+    margin: 28px 0 14px 0;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  /* Issue Cards */
+  .issue-card {
+    background: var(--card-bg);
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    padding: 18px 20px;
+    margin-bottom: 16px;
+  }
+
+  .issue-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 14px;
+  }
+
+  .issue-title {
+    font-size: 16px;
+    font-weight: 600;
+    color: var(--vscode-foreground);
+  }
+
+  .culprit-box {
+    background: rgba(248, 81, 73, 0.08);
+    border-left: 4px solid #ff453a;
+    border-radius: 4px;
+    padding: 12px 16px;
+    margin-bottom: 14px;
+  }
+
+  .culprit-title {
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: #ff453a;
+    margin-bottom: 4px;
+  }
+
+  .culprit-commit-info {
+    font-size: 14px;
+    margin-bottom: 4px;
+  }
+
+  .commit-tag {
+    font-family: var(--vscode-editor-font-family, monospace);
+    font-weight: 700;
+    color: #da8fff;
+    margin-right: 6px;
+  }
+
+  .culprit-meta {
+    font-size: 12px;
+    color: var(--vscode-descriptionForeground, #888888);
+    margin-bottom: 6px;
+  }
+
+  .culprit-file {
+    font-family: var(--vscode-editor-font-family, monospace);
+    font-size: 13px;
+    color: var(--vscode-textLink-foreground, #4daafc);
+    cursor: pointer;
+    display: inline-block;
+    padding: 2px 6px;
+    border-radius: 4px;
+    background: rgba(79, 139, 255, 0.1);
+    transition: background 0.15s ease;
+  }
+  .culprit-file:hover {
+    background: rgba(79, 139, 255, 0.25);
+  }
+
+  .detail-section {
+    margin-bottom: 12px;
+  }
+
+  .detail-label {
+    font-size: 12px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--vscode-descriptionForeground, #999999);
+    margin-bottom: 4px;
+  }
+
+  .detail-content {
+    font-size: 13px;
+    line-height: 1.5;
+  }
+
+  .solution-section {
+    background: rgba(46, 160, 67, 0.06);
+    border: 1px solid rgba(46, 160, 67, 0.25);
+    border-radius: 6px;
+    padding: 12px 14px;
+  }
+  .solution-section .detail-label {
+    color: #4cd964;
+  }
+
+  .patch-box {
+    margin-top: 10px;
+  }
+
+  .patch-header {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--vscode-descriptionForeground, #888888);
+    margin-bottom: 4px;
+  }
+
+  pre.patch-code {
+    white-space: pre-wrap;
+    background: var(--vscode-textCodeBlock-background, rgba(0, 0, 0, 0.3));
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    padding: 10px 12px;
+    font-family: var(--vscode-editor-font-family, monospace);
+    font-size: 12px;
+    margin: 0;
+    color: var(--vscode-foreground);
+    max-height: 250px;
+    overflow-y: auto;
+  }
+
+  /* Commit Timeline */
+  .commit-timeline-item {
+    background: var(--card-bg);
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    padding: 12px 16px;
+    margin-bottom: 8px;
+  }
+  .commit-item-culprit {
+    border-left: 4px solid #ff453a;
+  }
+  .commit-item-clean {
+    border-left: 4px solid #4cd964;
+  }
+
+  .commit-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 4px;
+  }
+
+  .commit-main {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex: 1;
+  }
+
+  .commit-index {
+    font-size: 11px;
+    color: var(--vscode-descriptionForeground, #888888);
+  }
+
+  .commit-hash {
+    font-family: var(--vscode-editor-font-family, monospace);
+    font-size: 12px;
+    font-weight: 700;
+    color: #da8fff;
+  }
+
+  .commit-msg {
+    font-size: 13px;
+    font-weight: 500;
+  }
+
+  .timeline-badge {
+    font-size: 10px;
+    font-weight: 700;
+    padding: 2px 8px;
+    border-radius: 4px;
+  }
+  .badge-culprit {
+    background: rgba(248, 81, 73, 0.2);
+    color: #ff453a;
+    border: 1px solid rgba(248, 81, 73, 0.4);
+  }
+  .badge-clean {
+    background: rgba(46, 160, 67, 0.2);
+    color: #4cd964;
+    border: 1px solid rgba(46, 160, 67, 0.4);
+  }
+
+  .commit-author-date {
+    font-size: 11px;
+    color: var(--vscode-descriptionForeground, #888888);
+  }
+
+  .commit-notes {
+    font-size: 12px;
+    color: #ff9f0a;
+    margin-top: 4px;
+  }
+
+  /* Severity badges */
+  .sev-badge {
+    display: inline-block;
+    padding: 3px 8px;
+    border-radius: 4px;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+  }
+  .sev-low {
+    background: rgba(46, 160, 67, 0.2);
+    color: #4cd964;
+    border: 1px solid rgba(46, 160, 67, 0.4);
+  }
+  .sev-medium {
+    background: rgba(227, 179, 65, 0.2);
+    color: #ffd60a;
+    border: 1px solid rgba(227, 179, 65, 0.4);
+  }
+  .sev-high {
+    background: rgba(219, 109, 40, 0.2);
+    color: #ff9f0a;
+    border: 1px solid rgba(219, 109, 40, 0.4);
+  }
+  .sev-critical {
+    background: rgba(248, 81, 73, 0.2);
+    color: #ff453a;
+    border: 1px solid rgba(248, 81, 73, 0.4);
+  }
+
+  .clean-box {
+    font-size: 13px;
+    color: #4cd964;
+    padding: 16px;
+    background: rgba(46, 160, 67, 0.08);
+    border-radius: 6px;
+    border: 1px solid rgba(46, 160, 67, 0.25);
+  }
+
+  .recommendation-list {
+    margin: 8px 0 0 20px;
+    padding: 0;
+    font-size: 13px;
+  }
+  .recommendation-list li {
+    margin-bottom: 6px;
+  }
+
+  .empty-state {
+    font-size: 13px;
+    color: var(--vscode-descriptionForeground, #888888);
+    font-style: italic;
+    padding: 6px 0;
+  }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div class="logo">🛡️</div>
+  <div>
+    <h1>Change Guard History Audit</h1>
+    <div class="subtitle">Chronological commit analysis, regression scanner & bug culprit detection.</div>
+    <div class="mode-pills">
+      <span class="mode-pill ${isTargeted ? "mode-pill-targeted" : "mode-pill-blind"}">${modeBadgeText}</span>
+      <span class="mode-pill scope-pill">📜 ${escapeHtml(report.analyzedRange)}</span>
+    </div>
+  </div>
+</div>
+
+${healthBannerHtml}
+
+<div class="card">
+  <div class="card-title">Executive Summary</div>
+  <p class="summary-text">${escapeHtml(report.summary)}</p>
+</div>
+
+<div class="section-heading">🎯 Detected Issues & Culprit Commits (${report.issues.length})</div>
+${issuesHtml}
+
+<div class="section-heading">📜 Commit Sequence Analyzed (${report.commitsList.length})</div>
+${timelineHtml}
+
+<div class="section-heading">💡 Recommendations</div>
+<div class="card">
+  ${recommendationsHtml}
 </div>
 
 <script>

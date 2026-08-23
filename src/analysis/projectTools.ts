@@ -407,3 +407,155 @@ export async function getGitDiff(workspaceRoot: string): Promise<string> {
     newFileDiffs.join("\n")
   );
 }
+
+/*
+ * -----------------------------------------------------------------
+ * Commit History Analysis Helpers
+ * -----------------------------------------------------------------
+ */
+
+export interface CommitSummary {
+  hash: string;
+  shortHash: string;
+  author: string;
+  date: string;
+  message: string;
+}
+
+/**
+ * Get a list of recent commits for selection in QuickPick.
+ */
+export async function getCommitList(
+  workspaceRoot: string,
+  maxCount: number = 30,
+): Promise<CommitSummary[]> {
+  return new Promise((resolve, reject) => {
+    execFile(
+      "git",
+      [
+        "log",
+        `-n${maxCount}`,
+        "--pretty=format:%H%x00%h%x00%an%x00%ad%x00%s",
+        "--date=relative",
+      ],
+      {
+        cwd: workspaceRoot,
+        windowsHide: true,
+        maxBuffer: 5 * 1024 * 1024,
+      },
+      (error, stdout, stderr) => {
+        if (error) {
+          reject(new Error(stderr.trim() || error.message));
+          return;
+        }
+
+        const lines = stdout.split(/\r?\n/).filter(Boolean);
+        const commits: CommitSummary[] = [];
+
+        for (const line of lines) {
+          const parts = line.split("\0");
+          if (parts.length >= 5) {
+            commits.push({
+              hash: parts[0].trim(),
+              shortHash: parts[1].trim(),
+              author: parts[2].trim(),
+              date: parts[3].trim(),
+              message: parts[4].trim(),
+            });
+          }
+        }
+
+        resolve(commits);
+      },
+    );
+  });
+}
+
+/**
+ * Get the unified diff / patch for a specific commit.
+ */
+export async function getCommitDiff(
+  workspaceRoot: string,
+  commitHash: string,
+): Promise<string> {
+  return new Promise((resolve, reject) => {
+    execFile(
+      "git",
+      ["show", "--unified=3", "--stat", "--patch", commitHash],
+      {
+        cwd: workspaceRoot,
+        windowsHide: true,
+        maxBuffer: 5 * 1024 * 1024,
+      },
+      (error, stdout, stderr) => {
+        if (error) {
+          reject(new Error(stderr.trim() || error.message));
+          return;
+        }
+        resolve(stdout || "");
+      },
+    );
+  });
+}
+
+/**
+ * Fetch chronological sequence of recent commits with individual diffs.
+ */
+export async function getRecentCommits(
+  workspaceRoot: string,
+  count: number = 5,
+  startRef: string = "HEAD",
+): Promise<Array<CommitSummary & { diff: string }>> {
+  return new Promise((resolve, reject) => {
+    execFile(
+      "git",
+      [
+        "log",
+        `-n${count}`,
+        startRef,
+        "--pretty=format:COMMIT_HEADER:%H%x00%h%x00%an%x00%ad%x00%s",
+        "--date=relative",
+        "-p",
+        "--unified=3",
+      ],
+      {
+        cwd: workspaceRoot,
+        windowsHide: true,
+        maxBuffer: 10 * 1024 * 1024, // 10 MB
+      },
+      (error, stdout, stderr) => {
+        if (error) {
+          reject(new Error(stderr.trim() || error.message));
+          return;
+        }
+
+        const raw = stdout || "";
+        const commitBlocks = raw.split("COMMIT_HEADER:").filter(Boolean);
+        const results: Array<CommitSummary & { diff: string }> = [];
+
+        for (const block of commitBlocks) {
+          const firstLineEnd = block.indexOf("\n");
+          const headerLine =
+            firstLineEnd !== -1 ? block.slice(0, firstLineEnd) : block;
+          const diffContent =
+            firstLineEnd !== -1 ? block.slice(firstLineEnd).trim() : "";
+
+          const parts = headerLine.split("\0");
+          if (parts.length >= 5) {
+            results.push({
+              hash: parts[0].trim(),
+              shortHash: parts[1].trim(),
+              author: parts[2].trim(),
+              date: parts[3].trim(),
+              message: parts[4].trim(),
+              diff: diffContent,
+            });
+          }
+        }
+
+        resolve(results);
+      },
+    );
+  });
+}
+

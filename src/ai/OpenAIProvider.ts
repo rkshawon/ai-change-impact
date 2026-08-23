@@ -5,9 +5,15 @@
  * investigate the project and return a structured ImpactReport.
  */
 
-import type { AIProvider, AnalysisContext, ImpactReport } from "./AIProvider";
-import { parseImpactReport } from "./AIProvider";
-import { SYSTEM_PROMPT } from "./systemPrompt";
+import type {
+  AIProvider,
+  AnalysisContext,
+  ImpactReport,
+  HistoryAnalysisContext,
+  HistoryAuditReport,
+} from "./AIProvider";
+import { parseImpactReport, parseHistoryAuditReport } from "./AIProvider";
+import { SYSTEM_PROMPT, HISTORY_AUDIT_SYSTEM_PROMPT } from "./systemPrompt";
 import * as projectTools from "../analysis/projectTools";
 
 const DEFAULT_MODEL = "gpt-4o-mini";
@@ -201,6 +207,125 @@ export class OpenAIProvider implements AIProvider {
 
     const lastMsg = messages[messages.length - 1];
     return parseImpactReport(lastMsg?.content || "", context.changedFiles, context.diagnostics);
+  }
+
+  async analyzeHistory(context: HistoryAnalysisContext): Promise<HistoryAuditReport> {
+    const key = this.apiKey || process.env.OPENAI_API_KEY;
+    if (!key) {
+      throw new Error(
+        "OpenAI API key is not set. Add OPENAI_API_KEY to a .env file or set it as an environment variable.",
+      );
+    }
+
+    let userContent = `## Workspace Root\n${context.workspacePath}\n\n`;
+
+    if (context.userQuery && context.userQuery.trim()) {
+      userContent +=
+        `## User-Reported Symptom / Issue To Diagnose\n` +
+        `"${context.userQuery.trim()}"\n\n` +
+        `Please locate the exact commit that introduced this symptom, explain the root cause, and provide a code solution.\n\n`;
+    } else {
+      userContent +=
+        `## Proactive Blind Audit Mode\n` +
+        `The developer has not specified a symptom. Please perform a thorough audit across the following sequence of commits to discover ANY bugs, regressions, or broken logic, attribute the culprit commit for each issue, and provide solutions.\n\n`;
+    }
+
+    userContent += `## Sequence of Commits to Audit (${context.commits.length} commits total):\n\n`;
+
+    for (let i = 0; i < context.commits.length; i++) {
+      const c = context.commits[i];
+      userContent += `### Commit #${i + 1}: [${c.shortHash}] ${c.message}\n`;
+      userContent += `**Author**: ${c.author} | **Date**: ${c.date} | **Hash**: ${c.hash}\n`;
+      if (c.diff) {
+        userContent += `\`\`\`diff\n${c.diff}\n\`\`\`\n\n`;
+      } else {
+        userContent += `*(Diff not loaded)*\n\n`;
+      }
+    }
+
+    if (context.diagnostics && context.diagnostics.length > 0) {
+      userContent +=
+        `## Active Workspace Compiler / Language Diagnostics\n` +
+        `${projectTools.formatDiagnostics(context.diagnostics)}\n\n`;
+    }
+
+    userContent +=
+      "Please investigate the project files using the tools to confirm traces and root causes, then output the structured JSON history audit report.";
+
+    const messages: ChatMessage[] = [
+      { role: "system", content: HISTORY_AUDIT_SYSTEM_PROMPT },
+      {
+        role: "user",
+        content: userContent,
+      },
+    ];
+
+    let iterations = 0;
+
+    while (iterations < MAX_TOOL_ITERATIONS) {
+      iterations++;
+
+      const res = await fetch(`${this.baseUrl}/chat/completions`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${key}`,
+        },
+        body: JSON.stringify({
+          model: this.model,
+          messages,
+          tools: TOOLS,
+          response_format: { type: "json_object" },
+        }),
+      });
+
+      if (!res.ok) {
+        const errText = await res.text();
+        throw new Error(`OpenAI API error (${res.status}): ${errText}`);
+      }
+
+      const data = (await res.json()) as {
+        choices?: Array<{ message: ChatMessage }>;
+      };
+      const assistantMessage = data.choices?.[0]?.message;
+
+      if (!assistantMessage) {
+        throw new Error("No response message returned from OpenAI.");
+      }
+
+      messages.push(assistantMessage);
+
+      if (!assistantMessage.tool_calls || assistantMessage.tool_calls.length === 0) {
+        const text = assistantMessage.content || "";
+        return parseHistoryAuditReport(text, context.commits);
+      }
+
+      // Execute each tool call
+      for (const call of assistantMessage.tool_calls) {
+        let args: Record<string, unknown> = {};
+        try {
+          args = JSON.parse(call.function.arguments || "{}");
+        } catch {
+          args = {};
+        }
+
+        const result = await this.executeTool(
+          call.function.name,
+          args,
+          context.workspacePath,
+          context.diagnostics || [],
+        );
+
+        messages.push({
+          role: "tool",
+          tool_call_id: call.id,
+          content: result,
+        });
+      }
+    }
+
+    const lastMsg = messages[messages.length - 1];
+    return parseHistoryAuditReport(lastMsg?.content || "", context.commits);
   }
 
   private async executeTool(

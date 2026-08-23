@@ -1,7 +1,7 @@
 import * as assert from "assert";
 import * as path from "path";
 import type { ProjectDiagnostic } from "../ai/AIProvider";
-import { parseImpactReport } from "../ai/AIProvider";
+import { parseImpactReport, parseHistoryAuditReport } from "../ai/AIProvider";
 import {
   safePath,
   searchFiles,
@@ -124,5 +124,83 @@ suite("Change Guard Test Suite", () => {
   test("getUntrackedFiles returns an array without throwing", async () => {
     const untracked = await getUntrackedFiles(workspaceRoot);
     assert.ok(Array.isArray(untracked));
+  });
+
+  test("parseHistoryAuditReport parses culprit commit and fix details", () => {
+    const rawJson = JSON.stringify({
+      analyzedRange: "Last 5 commits (a1b2c3d..e4f5g6h)",
+      summary: "Detected regression in Modal button click handler.",
+      overallHealth: "issues_found",
+      issues: [
+        {
+          issueTitle: "Modal submit button onClick handler disconnected",
+          severity: "high",
+          culpritCommit: {
+            hash: "a1b2c3d4e5f67890",
+            shortHash: "a1b2c3d",
+            author: "Developer A",
+            date: "2 days ago",
+            message: "Refactor modal component",
+          },
+          rootCause: "Prop was renamed from onClick to onConfirm, breaking the event handler link.",
+          evidence: "Modal.tsx line 42 changed onClick to onConfirm without updating Button.tsx.",
+          brokenFile: "src/components/Modal.tsx",
+          brokenLine: 42,
+          solution: "Restore onClick prop or update Button component to use onConfirm.",
+          suggestedPatch: "- <Button onConfirm={handleSubmit}>\n+ <Button onClick={handleSubmit}>",
+        },
+      ],
+      commitsList: [
+        {
+          hash: "a1b2c3d4e5f67890",
+          shortHash: "a1b2c3d",
+          message: "Refactor modal component",
+          author: "Developer A",
+          hasIssues: true,
+          notes: "Introduced submit button handler breakage",
+        },
+        {
+          hash: "e4f5g6h7i8j90123",
+          shortHash: "e4f5g6h",
+          message: "Update README",
+          author: "Developer B",
+          hasIssues: false,
+        },
+      ],
+      recommendations: ["Add automated end-to-end tests for modal submission"],
+    });
+
+    const report = parseHistoryAuditReport(rawJson);
+    assert.strictEqual(report.overallHealth, "issues_found");
+    assert.strictEqual(report.issues.length, 1);
+    assert.strictEqual(report.issues[0].culpritCommit.shortHash, "a1b2c3d");
+    assert.strictEqual(report.issues[0].brokenLine, 42);
+    assert.ok(report.issues[0].suggestedPatch?.includes("onClick"));
+    assert.strictEqual(report.commitsList.length, 2);
+    assert.strictEqual(report.commitsList[0].hasIssues, true);
+    assert.strictEqual(report.commitsList[1].hasIssues, false);
+  });
+
+  test("parseHistoryAuditReport handles clean blind audit correctly", () => {
+    const rawJson = JSON.stringify({
+      analyzedRange: "Last 10 commits",
+      summary: "All 10 commits verified clean with zero regressions.",
+      overallHealth: "clean",
+      issues: [],
+      commitsList: [
+        {
+          hash: "1111111",
+          shortHash: "1111111",
+          message: "Feat: Add login form",
+          author: "Developer A",
+          hasIssues: false,
+        },
+      ],
+      recommendations: ["All commits look healthy"],
+    });
+
+    const report = parseHistoryAuditReport(rawJson);
+    assert.strictEqual(report.overallHealth, "clean");
+    assert.strictEqual(report.issues.length, 0);
   });
 });

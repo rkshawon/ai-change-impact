@@ -6,9 +6,15 @@
  * produce a structured impact analysis.
  */
 
-import type { AIProvider, AnalysisContext, ImpactReport } from "./AIProvider";
-import { parseImpactReport } from "./AIProvider";
-import { SYSTEM_PROMPT } from "./systemPrompt";
+import type {
+  AIProvider,
+  AnalysisContext,
+  ImpactReport,
+  HistoryAnalysisContext,
+  HistoryAuditReport,
+} from "./AIProvider";
+import { parseImpactReport, parseHistoryAuditReport } from "./AIProvider";
+import { SYSTEM_PROMPT, HISTORY_AUDIT_SYSTEM_PROMPT } from "./systemPrompt";
 import * as projectTools from "../analysis/projectTools";
 
 /*
@@ -198,6 +204,217 @@ export class GeminiProvider implements AIProvider {
     }
 
     throw lastError || new Error("All Gemini candidate models are currently unavailable. Please try again later.");
+  }
+
+  async analyzeHistory(context: HistoryAnalysisContext): Promise<HistoryAuditReport> {
+    const apiKey = this.apiKey;
+
+    if (!apiKey) {
+      throw new Error(
+        "Gemini API key is not set. Use 'Change Guard: Set Custom API Key' to provide your API key.",
+      );
+    }
+
+    const candidateModels = [
+      this.customModel || process.env.GEMINI_MODEL || "gemini-3.6-flash",
+      "gemini-3.5-flash-lite",
+      "gemini-2.5-flash",
+    ];
+
+    const { GoogleGenAI, Type } = await import("@google/genai");
+    const ai = new GoogleGenAI({ apiKey });
+
+    const toolDeclarations: any[] = [
+      {
+        name: "read_file",
+        description:
+          "Read the contents of a file in the workspace. " +
+          "The path must be workspace-relative (e.g. src/index.ts).",
+        parameters: {
+          type: Type.OBJECT,
+          properties: {
+            path: {
+              type: Type.STRING,
+              description: "Workspace-relative file path.",
+            },
+          },
+          required: ["path"],
+        },
+      },
+      {
+        name: "search_files",
+        description:
+          "Search all project files for a text query and return matching " +
+          "workspace-relative file paths with line numbers and snippets. " +
+          "Useful for finding imports, usages, and references.",
+        parameters: {
+          type: Type.OBJECT,
+          properties: {
+            query: {
+              type: Type.STRING,
+              description: "Text to search for (case-insensitive).",
+            },
+          },
+          required: ["query"],
+        },
+      },
+      {
+        name: "list_files",
+        description:
+          "List files and directories under a workspace-relative directory.",
+        parameters: {
+          type: Type.OBJECT,
+          properties: {
+            directory: {
+              type: Type.STRING,
+              description:
+                'Workspace-relative directory path. Use "." for the root.',
+            },
+          },
+          required: ["directory"],
+        },
+      },
+      {
+        name: "get_project_diagnostics",
+        description:
+          "Get active compiler, syntax, and type errors reported by Language Servers " +
+          "for the project (works for Java, C#, C++, Go, Rust, Python, TypeScript, etc.). " +
+          "Optionally filter by workspace-relative file path.",
+        parameters: {
+          type: Type.OBJECT,
+          properties: {
+            path: {
+              type: Type.STRING,
+              description: "Optional file path substring to filter diagnostics for.",
+            },
+          },
+          required: [] as string[],
+        },
+      },
+    ];
+
+    let lastError: unknown;
+
+    for (const model of candidateModels) {
+      try {
+        return await this.runHistoryInvestigationWithModel(
+          ai,
+          model,
+          toolDeclarations,
+          context,
+        );
+      } catch (err: any) {
+        lastError = err;
+        const msg = String(err?.message || "");
+        const isUnavailable =
+          err?.status === 503 ||
+          msg.includes("503") ||
+          msg.includes("UNAVAILABLE") ||
+          msg.includes("high demand") ||
+          err?.status === 429 ||
+          msg.includes("429") ||
+          msg.includes("RESOURCE_EXHAUSTED");
+
+        if (isUnavailable) {
+          console.warn(`Change Guard: Model ${model} is experiencing high demand. Trying fallback...`);
+          await sleep(1000);
+          continue;
+        }
+
+        throw err;
+      }
+    }
+
+    throw lastError || new Error("All Gemini candidate models are currently unavailable. Please try again later.");
+  }
+
+  private async runHistoryInvestigationWithModel(
+    ai: any,
+    modelName: string,
+    toolDeclarations: any[],
+    context: HistoryAnalysisContext,
+  ): Promise<HistoryAuditReport> {
+    const chat = ai.chats.create({
+      model: modelName,
+      config: {
+        systemInstruction: HISTORY_AUDIT_SYSTEM_PROMPT,
+        tools: [{ functionDeclarations: toolDeclarations }],
+      },
+    });
+
+    let userMessage = `## Workspace Root\n${context.workspacePath}\n\n`;
+
+    if (context.userQuery && context.userQuery.trim()) {
+      userMessage +=
+        `## User-Reported Symptom / Issue To Diagnose\n` +
+        `"${context.userQuery.trim()}"\n\n` +
+        `Please locate the exact commit that introduced this symptom, explain the root cause, and provide a code solution.\n\n`;
+    } else {
+      userMessage +=
+        `## Proactive Blind Audit Mode\n` +
+        `The developer has not specified a symptom. Please perform a thorough audit across the following sequence of commits to discover ANY bugs, regressions, or broken logic, attribute the culprit commit for each issue, and provide solutions.\n\n`;
+    }
+
+    userMessage += `## Sequence of Commits to Audit (${context.commits.length} commits total):\n\n`;
+
+    for (let i = 0; i < context.commits.length; i++) {
+      const c = context.commits[i];
+      userMessage += `### Commit #${i + 1}: [${c.shortHash}] ${c.message}\n`;
+      userMessage += `**Author**: ${c.author} | **Date**: ${c.date} | **Hash**: ${c.hash}\n`;
+      if (c.diff) {
+        userMessage += `\`\`\`diff\n${c.diff}\n\`\`\`\n\n`;
+      } else {
+        userMessage += `*(Diff not loaded)*\n\n`;
+      }
+    }
+
+    if (context.diagnostics && context.diagnostics.length > 0) {
+      userMessage +=
+        `## Active Workspace Compiler / Language Diagnostics\n` +
+        `${projectTools.formatDiagnostics(context.diagnostics)}\n\n`;
+    }
+
+    userMessage +=
+      "Please investigate the project files using the tools to confirm traces and root causes, then output the structured JSON history audit report.";
+
+    let response = await this.sendMessageWithRetry(chat, { message: userMessage });
+
+    let iterations = 0;
+
+    while (iterations < MAX_TOOL_ITERATIONS) {
+      const functionCalls = response.functionCalls;
+
+      if (!functionCalls || functionCalls.length === 0) {
+        break;
+      }
+
+      iterations++;
+
+      const functionResponses = [];
+
+      for (const call of functionCalls) {
+        const result = await this.executeTool(
+          call.name || "",
+          (call.args || {}) as Record<string, unknown>,
+          context.workspacePath,
+          context.diagnostics || [],
+        );
+
+        functionResponses.push({
+          name: call.name || "",
+          response: { result },
+        });
+      }
+
+      response = await this.sendMessageWithRetry(chat, {
+        message: functionResponses.map((fr) => ({
+          functionResponse: fr,
+        })),
+      });
+    }
+
+    const text = response.text || "";
+    return parseHistoryAuditReport(text, context.commits);
   }
 
   private async runInvestigationWithModel(

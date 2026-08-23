@@ -7,9 +7,12 @@
 ## Features
 
 - **Semantic Change Analysis:** Automatically summarizes modified, added, and deleted files with high-level descriptions of intent.
+- **Commit History Audit & Bug Culprit Detection:** Inspect past commits (e.g. last 5, 10, 20 commits or custom range) to discover introduced regressions, attribute the exact culprit commit responsible for each issue, explain root causes, and provide code fixes.
+- **Blind Proactive Audits:** Audit past commits without specifying a symptom — Change Guard automatically detects subtle logic breakages, broken handlers, or runtime flaws and tells you which commit caused them.
+- **Targeted Symptom Diagnosis:** Describe a specific symptom (e.g. *"button click not working"*), and Change Guard pinpoints the exact commit where it broke and delivers the solution.
 - **Blast Radius & Dependency Tracking:** Identifies downstream components, consumers, and APIs that could be affected by your changes.
 - **Language & Runtime Error Detection:** Checks for potential breaking type mismatches, missing imports, syntax inconsistencies, and runtime issues.
-- **Interactive Impact Webview:** Visualizes changes by severity (Critical, Warning, Info) with detailed rationales and remediation suggestions.
+- **Interactive Webview Panels:** Visualizes impact reports and commit history timeline with copyable code patches and direct file/line jump navigation.
 - **Agentic Codebase Inspection:** Leverages project tools and symbol search to verify impact across your repository before generating reports.
 - **Seamless Git & IDE Integration:** Trigger analysis with one click from the Status Bar, Source Control (SCM) title bar, or keyboard shortcut.
 
@@ -46,14 +49,19 @@ Change Guard works **out-of-the-box** with zero setup required using the built-i
 ---
 
 ## How to Use
+ 
+### 1. Preview Uncommitted Working Changes
+- **Keyboard Shortcut:** `Ctrl+Alt+G` (or `Cmd+Alt+G` on macOS).
+- **Status Bar:** Click `$(shield) Change Guard` in the bottom right corner.
+- **Source Control View:** Click the Change Guard icon in the SCM title bar.
+- **Command Palette:** Run `Ctrl+Shift+P` -> `Change Guard: Preview Changes`.
 
-1. **Make code changes** in your Git repository.
-2. Trigger **Change Guard**:
-   - **Keyboard Shortcut:** `Ctrl+Alt+G` (or `Cmd+Alt+G` on macOS).
-   - **Status Bar:** Click `$(shield) Change Guard` in the bottom right corner.
-   - **Source Control View:** Click the Change Guard icon in the SCM title bar.
-   - **Command Palette:** Run `Ctrl+Shift+P` -> `Change Guard: Preview Changes`.
-3. An interactive webview panel opens displaying the blast radius, semantic changes, compiler diagnostics, and recommendations.
+### 2. Audit Past Commits & Find Bug Culprits (New!)
+- **Command Palette:** Run `Ctrl+Shift+P` -> `Change Guard: Audit History` (or type `cg audit`).
+- **Choose Depth:** Select `Last 5 Commits`, `Last 10 Commits`, `Last 20 Commits`, or pick a starting commit from your Git log.
+- **Proactive Blind Audit vs Targeted Diagnosis:**
+  - *Blind Audit (Default):* Press Enter without typing a symptom. Change Guard reviews every commit, detects all regressions or logic bugs, and identifies which commit caused them.
+  - *Targeted Diagnosis:* Type what is broken (e.g., *"button click not working"* or *"auth token not refreshing"*). Change Guard traces the bug to the exact culprit commit and provides the code fix.
 
 ---
 
