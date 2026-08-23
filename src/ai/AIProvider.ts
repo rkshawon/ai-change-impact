@@ -72,6 +72,67 @@ export interface AnalysisContext {
   diagnostics?: ProjectDiagnostic[];
 }
 
+export interface CommitInfo {
+  hash: string;
+  shortHash: string;
+  author: string;
+  date: string;
+  message: string;
+  diff?: string;
+}
+
+export interface BugCulprit {
+  issueTitle: string;
+  severity: Severity;
+  culpritCommit: {
+    hash: string;
+    shortHash: string;
+    author: string;
+    date: string;
+    message: string;
+  };
+  rootCause: string;
+  evidence: string;
+  brokenFile: string;
+  brokenLine?: number;
+  solution: string;
+  suggestedPatch?: string;
+}
+
+export interface CommitAuditStatus {
+  hash: string;
+  shortHash: string;
+  message: string;
+  author: string;
+  hasIssues: boolean;
+  notes?: string;
+}
+
+export interface HistoryAuditReport {
+  analyzedRange: string;
+  commitsCount: number;
+  summary: string;
+  overallHealth: "clean" | "issues_found";
+  issues: BugCulprit[];
+  commitsList: CommitAuditStatus[];
+  recommendations: string[];
+  rawText?: string;
+}
+
+export interface HistoryAnalysisContext {
+  /** Absolute path to the workspace root. */
+  workspacePath: string;
+
+  /** Chronological or reverse-chronological list of commits to audit. */
+  commits: CommitInfo[];
+
+  /** Optional specific symptom or issue described by the developer (e.g. "button click broken"). */
+  userQuery?: string;
+
+  /** Active compiler/type diagnostics for the workspace. */
+  diagnostics?: ProjectDiagnostic[];
+}
+
 /**
  * Any AI backend must implement this interface.
  *
@@ -84,6 +145,14 @@ export interface AIProvider {
    * Returns a structured ImpactReport.
    */
   analyzeChanges(context: AnalysisContext): Promise<ImpactReport>;
+
+  /**
+   * Run an AI-powered audit across a sequence of past commits to detect regressions/bugs,
+   * pinpoint culprit commits, explain root causes, and propose code fixes.
+   *
+   * Returns a structured HistoryAuditReport.
+   */
+  analyzeHistory(context: HistoryAnalysisContext): Promise<HistoryAuditReport>;
 }
 
 /**
@@ -242,3 +311,174 @@ export function parseImpactReport(
     };
   }
 }
+
+/**
+ * Safely parse and normalize raw AI text output into a valid HistoryAuditReport.
+ */
+export function parseHistoryAuditReport(
+  rawText: string,
+  commits: CommitInfo[] = [],
+): HistoryAuditReport {
+  let cleaned = rawText.trim();
+
+  // Strip markdown code fences if present
+  if (cleaned.startsWith("```")) {
+    cleaned = cleaned.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
+  }
+
+  const firstBrace = cleaned.indexOf("{");
+  const lastBrace = cleaned.lastIndexOf("}");
+  if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
+    cleaned = cleaned.slice(firstBrace, lastBrace + 1);
+  }
+
+  const defaultCommitsList: CommitAuditStatus[] = commits.map((c) => ({
+    hash: c.hash,
+    shortHash: c.shortHash || c.hash.substring(0, 7),
+    message: c.message,
+    author: c.author,
+    hasIssues: false,
+  }));
+
+  const rangeLabel =
+    commits.length > 0
+      ? `Last ${commits.length} commits (${commits[commits.length - 1].shortHash}..${commits[0].shortHash})`
+      : "Commit History";
+
+  try {
+    const parsed = JSON.parse(cleaned);
+
+    const summary =
+      typeof parsed.summary === "string" && parsed.summary.trim()
+        ? parsed.summary.trim()
+        : "History audit completed.";
+
+    const overallHealth: "clean" | "issues_found" =
+      parsed.overallHealth === "issues_found" ||
+      (Array.isArray(parsed.issues) && parsed.issues.length > 0)
+        ? "issues_found"
+        : "clean";
+
+    const issues: BugCulprit[] = Array.isArray(parsed.issues)
+      ? parsed.issues
+          .map((item: unknown) => {
+            if (!item || typeof item !== "object") {
+              return null;
+            }
+            const obj = item as Record<string, unknown>;
+            const issueTitle =
+              typeof obj.issueTitle === "string" && obj.issueTitle.trim()
+                ? obj.issueTitle.trim()
+                : "Unspecified Issue";
+            const severity = normalizeSeverity(obj.severity, "medium");
+
+            const cc = (obj.culpritCommit || {}) as Record<string, unknown>;
+            const commitHash = typeof cc.hash === "string" ? cc.hash : "";
+            const shortHash =
+              typeof cc.shortHash === "string"
+                ? cc.shortHash
+                : commitHash
+                ? commitHash.substring(0, 7)
+                : "Unknown";
+            const author = typeof cc.author === "string" ? cc.author : "Unknown";
+            const date = typeof cc.date === "string" ? cc.date : "";
+            const message = typeof cc.message === "string" ? cc.message : "";
+
+            const rootCause =
+              typeof obj.rootCause === "string" ? obj.rootCause : "Not provided";
+            const evidence =
+              typeof obj.evidence === "string" ? obj.evidence : "Not provided";
+            const brokenFile =
+              typeof obj.brokenFile === "string" ? obj.brokenFile : "";
+            const brokenLine =
+              typeof obj.brokenLine === "number" && obj.brokenLine > 0
+                ? obj.brokenLine
+                : undefined;
+            const solution =
+              typeof obj.solution === "string" ? obj.solution : "Not provided";
+            const suggestedPatch =
+              typeof obj.suggestedPatch === "string"
+                ? obj.suggestedPatch
+                : undefined;
+
+            return {
+              issueTitle,
+              severity,
+              culpritCommit: {
+                hash: commitHash,
+                shortHash,
+                author,
+                date,
+                message,
+              },
+              rootCause,
+              evidence,
+              brokenFile,
+              brokenLine,
+              solution,
+              suggestedPatch,
+            };
+          })
+          .filter((item: BugCulprit | null): item is BugCulprit => item !== null)
+      : [];
+
+    // Mark culprit commits in commit list
+    const culpritHashSet = new Set(
+      issues.map((i) => i.culpritCommit.hash || i.culpritCommit.shortHash),
+    );
+
+    const commitsList: CommitAuditStatus[] =
+      Array.isArray(parsed.commitsList) && parsed.commitsList.length > 0
+        ? parsed.commitsList.map((item: any) => ({
+            hash: String(item.hash || ""),
+            shortHash: String(item.shortHash || (item.hash ? item.hash.substring(0, 7) : "")),
+            message: String(item.message || ""),
+            author: String(item.author || ""),
+            hasIssues: Boolean(
+              item.hasIssues ||
+                culpritHashSet.has(item.hash) ||
+                culpritHashSet.has(item.shortHash),
+            ),
+            notes: typeof item.notes === "string" ? item.notes : undefined,
+          }))
+        : defaultCommitsList.map((c) => ({
+            ...c,
+            hasIssues: culpritHashSet.has(c.hash) || culpritHashSet.has(c.shortHash),
+          }));
+
+    const recommendations: string[] = Array.isArray(parsed.recommendations)
+      ? parsed.recommendations.filter(
+          (r: unknown): r is string => typeof r === "string" && Boolean(r.trim()),
+        )
+      : [];
+
+    return {
+      analyzedRange:
+        typeof parsed.analyzedRange === "string" && parsed.analyzedRange.trim()
+          ? parsed.analyzedRange.trim()
+          : rangeLabel,
+      commitsCount: commits.length || (Array.isArray(parsed.commitsList) ? parsed.commitsList.length : 0),
+      summary,
+      overallHealth: issues.length > 0 ? "issues_found" : overallHealth,
+      issues,
+      commitsList,
+      recommendations,
+      rawText,
+    };
+  } catch {
+    return {
+      analyzedRange: rangeLabel,
+      commitsCount: commits.length,
+      summary:
+        rawText.length > 300
+          ? rawText.slice(0, 300) + "..."
+          : rawText || "History audit completed.",
+      overallHealth: "clean",
+      issues: [],
+      commitsList: defaultCommitsList,
+      recommendations: ["Review raw audit analysis output."],
+      rawText,
+    };
+  }
+}
+
