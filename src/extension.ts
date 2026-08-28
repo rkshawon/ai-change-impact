@@ -127,12 +127,37 @@ export function activate(context: vscode.ExtensionContext) {
     },
   );
 
+  const setApiBaseUrlCommand = vscode.commands.registerCommand(
+    "change-guard.setApiBaseUrl",
+    async () => {
+      const config = vscode.workspace.getConfiguration("changeGuard");
+      const current = config.get<string>("apiBaseUrl", "");
+
+      const url = await vscode.window.showInputBox({
+        prompt: "Enter Backend API Base URL for live response probing (e.g. http://localhost:3000 or http://localhost:8000)",
+        value: current || "http://localhost:3000",
+        ignoreFocusOut: true,
+        placeHolder: "http://localhost:3000",
+      });
+
+      if (url !== undefined) {
+        await config.update("apiBaseUrl", url.trim(), vscode.ConfigurationTarget.Global);
+        vscode.window.showInformationMessage(
+          url.trim()
+            ? `Change Guard: Backend API Base URL set to ${url.trim()}.`
+            : "Change Guard: Backend API Base URL cleared.",
+        );
+      }
+    },
+  );
+
   context.subscriptions.push(
     previewCommand,
     auditHistoryCommand,
     selectProviderCommand,
     setApiKeyCommand,
     clearApiKeyCommand,
+    setApiBaseUrlCommand,
   );
 
   /*
@@ -363,6 +388,10 @@ async function previewChanges(context: vscode.ExtensionContext): Promise<void> {
     console.log("Change Guard - changed files:", allChangedFiles);
     console.log("Change Guard - active diagnostics:", diagnostics.length);
 
+    const config = vscode.workspace.getConfiguration("changeGuard");
+    const apiBaseUrl = config.get<string>("apiBaseUrl", "");
+    const apiHeaders = config.get<Record<string, string>>("apiHeaders", {});
+
     /*
      * -------------------------------------------------------
      * 4. Run AI investigation and analysis with progress indicator
@@ -380,6 +409,8 @@ async function previewChanges(context: vscode.ExtensionContext): Promise<void> {
           changedFiles: allChangedFiles,
           diff,
           diagnostics,
+          apiBaseUrl,
+          apiHeaders,
         });
       },
     );
@@ -566,6 +597,10 @@ async function auditCommitHistory(context: vscode.ExtensionContext): Promise<voi
 
     const diagnostics = collectWorkspaceDiagnostics(workspacePath);
 
+    const config = vscode.workspace.getConfiguration("changeGuard");
+    const apiBaseUrl = config.get<string>("apiBaseUrl", "");
+    const apiHeaders = config.get<Record<string, string>>("apiHeaders", {});
+
     /*
      * -------------------------------------------------------
      * 4. Run AI investigation with progress indicator
@@ -585,6 +620,8 @@ async function auditCommitHistory(context: vscode.ExtensionContext): Promise<voi
           commits,
           userQuery: trimmedQuery,
           diagnostics,
+          apiBaseUrl,
+          apiHeaders,
         });
       },
     );

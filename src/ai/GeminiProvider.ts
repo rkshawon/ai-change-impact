@@ -167,6 +167,27 @@ export class GeminiProvider implements AIProvider {
           required: [] as string[],
         },
       },
+      {
+        name: "probe_api_endpoint",
+        description:
+          "Send an HTTP request to a local or development backend API endpoint " +
+          "to inspect the actual returned JSON payload schema and property keys. " +
+          "Endpoint can be relative (e.g. /api/admin/modules) or full URL.",
+        parameters: {
+          type: Type.OBJECT,
+          properties: {
+            endpoint: {
+              type: Type.STRING,
+              description: "The API endpoint path (e.g. /api/admin/modules or /api/admin/modules/1) or full URL.",
+            },
+            method: {
+              type: Type.STRING,
+              description: "HTTP method: GET or POST (defaults to GET).",
+            },
+          },
+          required: ["endpoint"],
+        },
+      },
     ];
 
     let lastError: unknown;
@@ -291,6 +312,27 @@ export class GeminiProvider implements AIProvider {
           required: [] as string[],
         },
       },
+      {
+        name: "probe_api_endpoint",
+        description:
+          "Send an HTTP request to a local or development backend API endpoint " +
+          "to inspect the actual returned JSON payload schema and property keys. " +
+          "Endpoint can be relative (e.g. /api/admin/modules) or full URL.",
+        parameters: {
+          type: Type.OBJECT,
+          properties: {
+            endpoint: {
+              type: Type.STRING,
+              description: "The API endpoint path (e.g. /api/admin/modules or /api/admin/modules/1) or full URL.",
+            },
+            method: {
+              type: Type.STRING,
+              description: "HTTP method: GET or POST (defaults to GET).",
+            },
+          },
+          required: ["endpoint"],
+        },
+      },
     ];
 
     let lastError: unknown;
@@ -398,6 +440,8 @@ export class GeminiProvider implements AIProvider {
           (call.args || {}) as Record<string, unknown>,
           context.workspacePath,
           context.diagnostics || [],
+          context.apiBaseUrl,
+          context.apiHeaders,
         );
 
         functionResponses.push({
@@ -436,6 +480,10 @@ export class GeminiProvider implements AIProvider {
       `## Changed Files\n${context.changedFiles.map((f) => `- ${f}`).join("\n")}\n\n` +
       `## Git Diff\n\`\`\`diff\n${context.diff}\n\`\`\`\n\n`;
 
+    if (context.apiBaseUrl && context.apiBaseUrl.trim()) {
+      userMessage += `## Configured Backend API Base URL\n${context.apiBaseUrl.trim()}\n(You can probe live endpoints using the \`probe_api_endpoint\` tool)\n\n`;
+    }
+
     if (context.diagnostics && context.diagnostics.length > 0) {
       userMessage +=
         `## Active Compiler / Language Diagnostics\n` +
@@ -443,7 +491,7 @@ export class GeminiProvider implements AIProvider {
     }
 
     userMessage +=
-      "Please investigate the project using the tools to trace dependencies, consumers, compiler diagnostics, and potential impact. " +
+      "Please investigate the project using the tools to trace dependencies, consumers, compiler diagnostics, API contracts, and potential impact. " +
       "Then produce the structured JSON impact report.";
 
     let response = await this.sendMessageWithRetry(chat, { message: userMessage });
@@ -467,6 +515,8 @@ export class GeminiProvider implements AIProvider {
           (call.args || {}) as Record<string, unknown>,
           context.workspacePath,
           context.diagnostics || [],
+          context.apiBaseUrl,
+          context.apiHeaders,
         );
 
         functionResponses.push({
@@ -520,6 +570,8 @@ export class GeminiProvider implements AIProvider {
     args: Record<string, unknown>,
     workspaceRoot: string,
     diagnostics: projectTools.ProjectDiagnostic[] = [],
+    apiBaseUrl?: string,
+    apiHeaders?: Record<string, string>,
   ): Promise<string> {
     try {
       switch (name) {
@@ -560,6 +612,22 @@ export class GeminiProvider implements AIProvider {
         case "get_project_diagnostics": {
           const filterPath = typeof args.path === "string" ? args.path : undefined;
           return projectTools.formatDiagnostics(diagnostics, filterPath);
+        }
+
+        case "probe_api_endpoint": {
+          const endpoint = typeof args.endpoint === "string" ? args.endpoint : "";
+          const method =
+            typeof args.method === "string" && args.method.toUpperCase() === "POST"
+              ? "POST"
+              : "GET";
+          const body = typeof args.body === "string" ? args.body : undefined;
+          return await projectTools.probeApiEndpoint(
+            endpoint,
+            apiBaseUrl,
+            apiHeaders,
+            method,
+            body,
+          );
         }
 
         default:

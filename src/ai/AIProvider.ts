@@ -70,6 +70,12 @@ export interface AnalysisContext {
 
   /** Active compiler/type diagnostics for the workspace. */
   diagnostics?: ProjectDiagnostic[];
+
+  /** Configured backend API Base URL for active probing. */
+  apiBaseUrl?: string;
+
+  /** Optional HTTP headers for API probing (e.g. auth tokens). */
+  apiHeaders?: Record<string, string>;
 }
 
 export interface CommitInfo {
@@ -131,6 +137,12 @@ export interface HistoryAnalysisContext {
 
   /** Active compiler/type diagnostics for the workspace. */
   diagnostics?: ProjectDiagnostic[];
+
+  /** Configured backend API Base URL for active probing. */
+  apiBaseUrl?: string;
+
+  /** Optional HTTP headers for API probing (e.g. auth tokens). */
+  apiHeaders?: Record<string, string>;
 }
 
 /**

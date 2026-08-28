@@ -52,6 +52,10 @@
       {
         "command": "change-guard.clearApiKey",
         "title": "Change Guard: Clear Custom API Key (Revert to Default)"
+      },
+      {
+        "command": "change-guard.setApiBaseUrl",
+        "title": "Change Guard: Set API Base URL (Backend Probing)"
       }
     ],
     "configuration": {
@@ -84,6 +88,16 @@
           "type": "string",
           "default": "https://api.openai.com/v1",
           "description": "Custom API base URL for OpenAI-compatible providers."
+        },
+        "changeGuard.apiBaseUrl": {
+          "type": "string",
+          "default": "",
+          "description": "Base URL of your backend or local dev server (e.g. http://localhost:3000 or http://localhost:8000) for active API response probing and schema contract diffing."
+        },
+        "changeGuard.apiHeaders": {
+          "type": "object",
+          "default": {},
+          "description": "Optional HTTP headers (such as Authorization tokens) to include when Change Guard probes backend API endpoints."
         }
       }
     },
