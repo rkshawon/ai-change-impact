@@ -58,18 +58,32 @@ A diff can contain mostly formatting changes while also containing one small but
    - where it is passed
    - how it is eventually used by the request
 
-8. Use the available read-only tools to investigate:
-   - Use \`search_files\` to discover where modified symbols are imported, referenced, or used across the workspace.
-   - Use \`read_file\` to inspect relevant consumer files, type definitions, tests, or the surrounding context of changed code.
+8. Cross-View Entity Parity, Prop Origin, Backend Schema & API Response Diffing:
+   - When a component representing an entity or passing props (e.g. \`<ModuleAvatar initials={module.initials} color={module.color} />\`, list item, card, badge, status pill) is added, removed, commented out, or modified:
+     a. **Inspect the Rendered Component Definition:** ALWAYS use \`search_files\` and \`read_file\` to inspect the source code of the rendered sub-component (e.g., \`ModuleAvatar.tsx\`). Check how each prop (e.g., \`color\`, \`initials\`) is consumed, and identify any **fallback/default values** (e.g. \`color || 'blue'\`, \`fallbackColor = '#3b82f6'\`, or default styling applied when a prop is undefined/missing).
+     b. **Active API Endpoint Probing (\`probe_api_endpoint\`):** When you identify API routes or queries fetching data for the changed component (e.g., \`/api/admin/modules\`, \`GET /modules/:id\`, \`/api/users\`), call \`probe_api_endpoint\` with the endpoint path to inspect the actual runtime JSON keys returned by the backend.
+     c. **Execute Property-by-Property Contract Diff:** Compare what properties the frontend component expects (e.g., \`module.color\`, \`module.initials\`) against what keys the backend payload actually contains.
+        - **Anticipated / Future Backend Properties:** Even if the TypeScript interface defines a property as optional (e.g. \`color?: string\` or \`module_icon_color?: string\`) in anticipation of future backend implementation, you MUST explicitly point out when the backend API response currently lacks this property. State clearly that the frontend feature is currently running in fallback mode (e.g. fixed default blue background) until the backend endpoint adds the field.
+        - If a property is missing in the backend JSON (e.g. \`module_icon_color\` is omitted in the list endpoint \`records[]\`), document that the frontend is receiving \`undefined\` and triggering fallback styling.
+        - If the detail endpoint returns the property while the list endpoint omits it, highlight this **List vs. Detail Schema Asymmetry**.
+     d. **Locate All Sibling & Detail Views:** ALWAYS use \`search_files\` to find other components and views displaying the same entity (e.g., \`*details*\`, \`*view*\`, \`*modal*\`, \`*drawer*\`, \`*header*\`).
+     e. **Explicitly Detail the UX & Data Contract Asymmetry in Report:** In your summary, semantic changes, downstream impacts, and risks, explicitly report both the visual change and the underlying backend data difference:
+        - e.g., *"In the list card, the avatar is removed/commented out. In the detail view (\`ModuleHeader\`), the avatar is still rendered with dynamic color from the backend. Note that the backend list API (\`/api/admin/modules\`) does not supply the color code property (causing the list view to have always displayed the fixed fallback blue background), whereas the detail API provides the dynamic backend color."*
+     f. **Check State & Cache Parity:** Check for cache/mutation desynchronization between list queries and detail mutations.
+
+9. Use the available read-only and investigation tools:
+   - Use \`search_files\` to discover where modified symbols, components, props, DTOs, or API endpoints are defined, imported, or used across the workspace.
+   - Use \`read_file\` to inspect relevant component implementations (e.g. \`ModuleAvatar.tsx\`), consumer files, sibling/detail views, backend endpoints/DTOs, or query hooks.
+   - Use \`probe_api_endpoint\` to probe local/development backend endpoints (e.g. \`/api/admin/modules\`) and inspect live response schemas.
    - Use \`get_project_diagnostics\` to check real-time compiler, syntax, and type errors from Language Servers (works across Java, C#, C++, Go, Rust, Python, TypeScript, etc.).
    - Use \`list_files\` to explore directory hierarchies when appropriate.
    - Use \`get_git_diff\` if you need to re-verify the full diff context (including newly created untracked files).
 
-9. Find downstream callers, imports, consumers, and related functions when they are relevant to the changed behavior.
+10. Find downstream callers, imports, consumers, and related functions when they are relevant to the changed behavior.
 
-10. Multi-Language Compiler & Semantic Evaluation:
+11. Multi-Language Compiler & Semantic Evaluation:
     - Check active compiler diagnostics (\`get_project_diagnostics\`) to catch hard type/syntax breakages.
-    - Also analyze semantic/runtime logic: do NOT assume a change is harmless just because the compiler has zero errors. A semantically incorrect variable or broken lifecycle can still have valid syntax and types.
+    - Also analyze semantic/runtime logic: do NOT assume a change is harmless just because the compiler has zero errors. A semantically incorrect variable, missing prop in backend DTO, fallback trap, or broken lifecycle can still have valid syntax and types.
 
 ## SEVERITY
 
@@ -188,6 +202,7 @@ Your mission is to audit a chronological sequence of past Git commits and determ
   - Watch for variable/function substitutions (e.g., passing the wrong argument, renamed callbacks).
   - Watch for broken contracts, dangling event listeners, unhandled promises, or missing returns.
   - Watch for state mutation bugs, race conditions, or dropped props.
+  - Watch for entity & multi-view divergence (e.g. modifying/removing a field or avatar in a List/Card view while a Detail view expects it, or backend List DTO lacking fields present in Detail DTO).
   - Watch for subtle regressions where formatting concealed a functional breakage.
 - If ANY issue is detected:
   - Create a \`BugCulprit\` entry attributing the issue to that specific commit.
@@ -196,8 +211,9 @@ Your mission is to audit a chronological sequence of past Git commits and determ
   - Mark \`overallHealth\` as "clean" and provide a summary of the safe changes made across the range.
 
 ## TOOL USAGE:
-- Use \`search_files\` to find where modified functions, variables, or types are imported or called.
-- Use \`read_file\` to inspect current file implementations and verify context.
+- Use \`search_files\` to find where modified functions, variables, components, or types are imported, called, or used across sibling views (e.g. List vs Detail).
+- Use \`read_file\` to inspect current file implementations, API schemas, and verify context.
+- Use \`probe_api_endpoint\` to test live development API responses and verify schema contracts against frontend components.
 - Use \`get_project_diagnostics\` to check real-time compiler, syntax, and type errors from Language Servers.
 - Use \`list_files\` if needed to inspect directory structure.
 

@@ -559,3 +559,93 @@ export async function getRecentCommits(
   });
 }
 
+/*
+ * -----------------------------------------------------------------
+ * probe_api_endpoint & Contract Testing
+ * -----------------------------------------------------------------
+ */
+
+const MAX_PROBE_BODY_SIZE = 30 * 1024; // 30 KB max snippet for AI analysis
+
+/**
+ * Send an active GET or POST request to a development/backend API endpoint
+ * to inspect actual returned JSON payload schemas and property keys.
+ */
+export async function probeApiEndpoint(
+  endpointPathOrUrl: string,
+  configuredBaseUrl?: string,
+  customHeaders?: Record<string, string>,
+  method: "GET" | "POST" | "PUT" | "PATCH" = "GET",
+  body?: string,
+): Promise<string> {
+  if (!endpointPathOrUrl || typeof endpointPathOrUrl !== "string") {
+    return 'Error: "endpoint" parameter is required.';
+  }
+
+  let targetUrl: string;
+  const trimmed = endpointPathOrUrl.trim();
+
+  if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) {
+    targetUrl = trimmed;
+  } else {
+    const base = (configuredBaseUrl && configuredBaseUrl.trim())
+      ? configuredBaseUrl.trim()
+      : "http://localhost:3000";
+    
+    const normalizedBase = base.replace(/\/+$/, "");
+    const normalizedPath = trimmed.startsWith("/") ? trimmed : `/${trimmed}`;
+    targetUrl = `${normalizedBase}${normalizedPath}`;
+  }
+
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 5000);
+
+  const headers: Record<string, string> = {
+    Accept: "application/json, text/plain, */*",
+    "User-Agent": "Change-Guard-API-Probe/1.0",
+    ...(customHeaders || {}),
+  };
+
+  if (body && (method === "POST" || method === "PUT" || method === "PATCH")) {
+    headers["Content-Type"] = "application/json";
+  }
+
+  try {
+    const res = await fetch(targetUrl, {
+      method,
+      headers,
+      body: body ? body : undefined,
+      signal: controller.signal,
+    });
+
+    clearTimeout(timeoutId);
+
+    const contentType = res.headers.get("content-type") || "";
+    const statusText = `HTTP ${res.status} ${res.statusText}`;
+
+    let responseText = await res.text();
+
+    if (responseText.length > MAX_PROBE_BODY_SIZE) {
+      responseText = responseText.slice(0, MAX_PROBE_BODY_SIZE) + "\n...(truncated)";
+    }
+
+    if (contentType.includes("application/json") || responseText.trim().startsWith("{") || responseText.trim().startsWith("[")) {
+      try {
+        const parsed = JSON.parse(responseText);
+        const formatted = JSON.stringify(parsed, null, 2);
+        return `[API Probe Success: ${statusText}]\nURL: ${targetUrl}\nResponse JSON:\n${formatted}`;
+      } catch {
+        // Fallback to raw text if not valid JSON
+      }
+    }
+
+    return `[API Probe Response: ${statusText}]\nURL: ${targetUrl}\nResponse Body:\n${responseText || "(Empty body)"}`;
+  } catch (err: any) {
+    clearTimeout(timeoutId);
+    if (err?.name === "AbortError") {
+      return `[API Probe Timeout: 5000ms exceeded]\nURL: ${targetUrl}\nError: Server took longer than 5 seconds to respond. Ensure your local backend is running and reachable.`;
+    }
+    return `[API Probe Failed]\nURL: ${targetUrl}\nError: ${err?.message || String(err)}\nNote: If the backend is running on a different port or host, configure 'changeGuard.apiBaseUrl' in VS Code settings.`;
+  }
+}
+

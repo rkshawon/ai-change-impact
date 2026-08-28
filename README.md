@@ -12,6 +12,7 @@
 - **Targeted Symptom Diagnosis:** Describe a specific symptom (e.g. *"button click not working"*), and Change Guard pinpoints the exact commit where it broke and delivers the solution.
 - **Blast Radius & Dependency Tracking:** Identifies downstream components, consumers, and APIs that could be affected by your changes.
 - **Language & Runtime Error Detection:** Checks for potential breaking type mismatches, missing imports, syntax inconsistencies, and runtime issues.
+- **Backend API Response Probing & Contract Diffing:** Probes development/backend endpoints (`probe_api_endpoint`) to compare live JSON response keys against frontend component props, catching missing properties, fallback traps, and List vs. Detail schema asymmetry.
 - **Interactive Webview Panels:** Visualizes impact reports and commit history timeline with copyable code patches and direct file/line jump navigation.
 - **Agentic Codebase Inspection:** Leverages project tools and symbol search to verify impact across your repository before generating reports.
 - **Seamless Git & IDE Integration:** Trigger analysis with one click from the Status Bar, Source Control (SCM) title bar, or keyboard shortcut.
@@ -45,6 +46,8 @@ Change Guard works **out-of-the-box** with zero setup required using the built-i
    - Select your provider and paste your key. It will be stored securely in VS Code's encrypted SecretStorage.
 4. **Revert to Default Built-in Key:**
    - Press `Ctrl+Shift+P` -> `Change Guard: Clear Custom API Key`.
+5. **Configure Backend API Base URL (For API Contract Probing):**
+   - Press `Ctrl+Shift+P` -> `Change Guard: Set API Base URL` -> Enter your local/dev server URL (e.g. `http://localhost:3000` or `http://localhost:8000`).
 
 ---
 
@@ -73,6 +76,8 @@ Change Guard contributes the following settings (`Ctrl+,` -> search `Change Guar
 * `changeGuard.geminiModel`: Gemini model name (default: `"gemini-3.6-flash"`).
 * `changeGuard.openaiModel`: OpenAI model name (default: `"gpt-4o-mini"`).
 * `changeGuard.openaiBaseUrl`: Custom API endpoint (default: `"https://api.openai.com/v1"`).
+* `changeGuard.apiBaseUrl`: Base URL for local/dev API server (e.g. `"http://localhost:3000"`).
+* `changeGuard.apiHeaders`: Custom HTTP headers (such as `{"Authorization": "Bearer ..."}`) for API probing.
 
 ---
 
